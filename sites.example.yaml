@@ -1,0 +1,17 @@
+# PT 站点配置模板
+# 复制此文件为 sites.yaml 并填入各站点的 passkey
+#
+# passkey 获取方式：
+#   登录 PT 站点 → 控制面板 → 密钥/Passkey
+#   或从站点发布的种子下载链接中提取
+
+sites:
+  - name: example_site
+    url: https://example.com
+    api_url: https://example.com/api/pieces-hash
+    passkey: your_passkey_here
+
+  - name: another_site
+    url: https://another-pt.site
+    api_url: https://another-pt.site/api/pieces-hash
+    passkey: your_passkey_here

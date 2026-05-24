@@ -1,0 +1,32 @@
+# SeedHound 配置模板
+# 复制此文件为 config.yaml 并填入实际值
+
+global:
+  concurrency: 20
+  batch_size: 100
+  request_timeout: 15
+  retry_count: 2
+  retry_delay: 2.0
+
+db:
+  path: data/cache.db
+
+log:
+  level: INFO
+  file: logs/reseed.log
+
+downloader:
+  type: qbittorrent
+  host: 127.0.0.1
+  port: 8080
+  username: admin
+  password: your_password_here
+  torrent_dir: /path/to/BT_backup
+  skip_hash_check: true
+  auto_start: true
+  tag: SeedHound
+
+notify:
+  feishu:
+    webhook_url: ""
+    secret: ""
