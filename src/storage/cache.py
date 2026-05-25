@@ -66,16 +66,41 @@ class TorrentCache:
         async with self._lock:
             async with aiosqlite.connect(str(self._db_path)) as db:
                 await db.executemany(
-                    "INSERT OR IGNORE INTO pieces_cache (pieces_hash, info_hash, file_name) VALUES (?, ?, ?)",
+                    "INSERT OR IGNORE INTO pieces_cache"
+                    " (pieces_hash, info_hash, file_name) VALUES (?, ?, ?)",
                     [(e["pieces_hash"], e["info_hash"], e["file_name"]) for e in entries],
                 )
                 await db.commit()
+
+    async def get_reseeded_combos(
+        self, combos: list[tuple[str, str, int]],
+    ) -> set[tuple[str, str, int]]:
+        result = set()
+        if not combos:
+            return result
+        async with aiosqlite.connect(str(self._db_path)) as db:
+            for i in range(0, len(combos), 500):
+                batch = combos[i:i + 500]
+                placeholders = ",".join("(?, ?, ?)" for _ in batch)
+                params = []
+                for ph, sn, tid in batch:
+                    params.extend([ph, sn, tid])
+                cursor = await db.execute(
+                    f"SELECT pieces_hash, site_name, torrent_id FROM reseed_history "
+                    f"WHERE (pieces_hash, site_name, torrent_id) IN ({placeholders})",
+                    params,
+                )
+                rows = await cursor.fetchall()
+                for ph, sn, tid in rows:
+                    result.add((ph, sn, tid))
+        return result
 
     async def add_reseed_record(self, pieces_hash: str, site_name: str, torrent_id: int):
         async with self._lock:
             async with aiosqlite.connect(str(self._db_path)) as db:
                 await db.execute(
-                    "INSERT INTO reseed_history (pieces_hash, site_name, torrent_id) VALUES (?, ?, ?)",
+                    "INSERT INTO reseed_history"
+                    " (pieces_hash, site_name, torrent_id) VALUES (?, ?, ?)",
                     (pieces_hash, site_name, torrent_id),
                 )
                 await db.commit()

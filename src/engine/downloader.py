@@ -3,7 +3,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Optional
 
-logger = logging.getLogger("reseed_puppy")
+logger = logging.getLogger("seedhound")
 
 
 class DownloaderBase(ABC):
@@ -18,12 +18,17 @@ class DownloaderBase(ABC):
     @abstractmethod
     async def add_torrent(
         self,
-        download_url: str,
-        save_path: str,
+        download_url: Optional[str] = None,
+        torrent_files: Optional[bytes] = None,
+        save_path: str = "",
         skip_hash_check: bool = True,
         paused: bool = True,
         tag: str = "",
     ) -> bool:
+        ...
+
+    @abstractmethod
+    async def resume_torrent(self, info_hash: str) -> bool:
         ...
 
     @abstractmethod
@@ -76,19 +81,23 @@ class QbittorrentDownloader(DownloaderBase):
 
     async def add_torrent(
         self,
-        download_url: str,
-        save_path: str,
+        download_url: Optional[str] = None,
+        torrent_files: Optional[bytes] = None,
+        save_path: str = "",
         skip_hash_check: bool = True,
         paused: bool = True,
         tag: str = "",
     ) -> bool:
         try:
             kwargs = dict(
-                urls=download_url,
                 save_path=save_path,
                 is_skip_checking=skip_hash_check,
                 is_paused=paused,
             )
+            if download_url:
+                kwargs["urls"] = download_url
+            if torrent_files:
+                kwargs["torrent_files"] = torrent_files
             if tag:
                 kwargs["tags"] = tag
             result = await asyncio.get_event_loop().run_in_executor(
@@ -98,6 +107,17 @@ class QbittorrentDownloader(DownloaderBase):
             return result == "Ok."
         except Exception as e:
             logger.error("添加种子失败: %s", e)
+            return False
+
+    async def resume_torrent(self, info_hash: str) -> bool:
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._client.torrents_resume(torrent_hashes=info_hash),
+            )
+            return True
+        except Exception as e:
+            logger.debug("恢复种子失败 %s: %s", info_hash, e)
             return False
 
     async def close(self):
@@ -156,6 +176,14 @@ class TransmissionDownloader(DownloaderBase):
             return True
         except Exception as e:
             logger.error("Transmission 添加种子失败: %s", e)
+            return False
+
+    async def resume_torrent(self, info_hash: str) -> bool:
+        try:
+            self._client.start_torrent(info_hash)
+            return True
+        except Exception as e:
+            logger.debug("恢复种子失败 %s: %s", info_hash, e)
             return False
 
     async def close(self):

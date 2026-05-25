@@ -4,7 +4,7 @@ from typing import Optional
 
 import aiohttp
 
-logger = logging.getLogger("reseed_puppy")
+logger = logging.getLogger("seedhound")
 
 
 class FeishuNotifier:
@@ -52,15 +52,29 @@ class FeishuNotifier:
     def _build_report_markdown(self, stats) -> str:
         parts = []
 
+        unique_count = stats.total_torrents - stats.duplicate_count
         parts.append(
             f"**扫描统计**\n"
             f"本地种子: {stats.total_torrents} | "
+            f"去重: {stats.duplicate_count} | "
+            f"唯一: {unique_count}\n"
             f"新增: {stats.new_torrents} | "
-            f"匹配: {stats.matched_count}\n"
+            f"全站匹配: {stats.matched_count}\n"
+            f"追踪器跳过: {stats.tracker_skip_count} | "
             f"成功辅种: {stats.succeeded_count} | "
             f"失败: {stats.failed_count} | "
             f"耗时: {stats.duration_str}"
         )
+
+        site_matches = stats.site_match_counts
+        if site_matches:
+            sorted_m = sorted(site_matches.items(), key=lambda x: x[1], reverse=True)
+            lines = "\n".join(
+                f"{name}: 匹配 {count} 个" for name, count in sorted_m[:20]
+            )
+            if len(sorted_m) > 20:
+                lines += f"\n（仅展示前20，共 {len(sorted_m)} 个站点有匹配）"
+            parts.append(f"**各站点匹配数（去重后）**\n{lines}")
 
         succeeded = stats.site_succeeded
         if succeeded:

@@ -50,7 +50,7 @@ def bdecode(data: bytes) -> tuple:
             length = int(data[pos:colon])
             start = colon + 1
             return data[start:start + length], start + length
-        raise ValueError(f"Invalid bencode at position {pos}: {data[pos:pos+10]}")
+        raise ValueError(f"Invalid bencode at position {pos}: {data[pos:pos + 10]}")
 
     result, _ = _decode(data, 0)
     return result

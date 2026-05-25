@@ -56,7 +56,7 @@
 ## 目录结构
 
 ```
-reseed_puppy_standalone/
+seedhound/
 ├── run.py                    # 入口
 ├── config.example.yaml       # 主配置模板
 ├── sites.example.yaml        # 站点配置模板
@@ -117,7 +117,7 @@ db:
 
 log:
   level: INFO                  # 日志级别
-  file: logs/reseed.log        # 日志文件路径
+  file: logs/seedhound.log     # 日志文件路径
 
 downloader:
   type: qbittorrent            # qbittorrent 或 transmission
@@ -149,17 +149,72 @@ sites:
 ### 运行
 
 ```bash
-# 正常运行
+# 正常运行（全站点辅种）
 python run.py
 
 # 演练模式（只查询不添加）
 python run.py --dry-run
 
+# 指定站点辅种（逗号分隔多个）
+python run.py --site 站点A,站点B,站点C
+
+# 跳过飞书通知
+python run.py --no-feishu
+
 # 强制全量重建缓存
 python run.py --no-cache
 ```
 
-## 技术架构
+| 参数 | 说明 |
+|------|------|
+| `--dry-run` | 演练模式，只查询匹配不添加种子 |
+| `--site S1,S2` | 仅对指定站点辅种（逗号分隔） |
+| `--no-feishu` | 跳过飞书通知推送 |
+
+## 辅种方法学
+
+SeedHound 的设计核心是**用最小站点压力换取最大辅种收益**。以下是其关键优化策略：
+
+### 1. 按内容去重而非按种子去重
+
+不同站点发布的同一资源，尽管 `.torrent` 文件的 `info_hash` 不同，但文件内容的 `pieces_hash` 相同。SeedHound 在扫描阶段以 `pieces_hash` 为键对所有本地种子去重：
+
+```
+38,000 个 .torrent 文件 → 按 pieces_hash 去重 → ~4,000 个唯一种子
+```
+
+这意味着向站点 API 发送的查询量减少约 **89%**，大幅降低站点压力。
+
+### 2. Tracker 解析跳过（零站点流量）
+
+种子添加阶段，通过解析 qBittorrent `BT_backup` 目录中现有 `.torrent` 文件的 `announce` 字段，直接判断某个种子是否已在目标站点做种：
+
+```
+qB 现有 .torrent → 提取 announce URL → 解析域名 → 匹配站点
+种子已在站点 [A, B] 做种 → 跳过站点 A、B 的匹配 → 仅添加新站点
+```
+
+**这是避免重复添加的核心机制**。无需下载站点 `.torrent`、无需查询站点 API，完全在本地完成判断。
+
+### 3. 辅种记录双重校验
+
+对每条候选辅种记录，执行两层过滤：
+1. **逻辑层**：查询 `reseed_history` 表，跳过已记录的成功辅种
+2. **物理层**：对比历史记录中的 `pieces_hash` 是否仍在 qBittorrent 中存在；已被删除的种子自动重新尝试
+
+这解决了 `reseed_history` 不完整的冷启动问题——即使历史记录为空，物理层校验仍能防止重复添加。
+
+### 4. 增量缓存
+
+已解析的 `.torrent` 文件的 `pieces_hash` 持久化到 SQLite。后续运行时仅需增量扫描新增文件，避免每次全量解析。
+
+### 5. 自动开始已完成的种子
+
+添加种子成功后，SeedHound 自动检测该种子是否已完成校验（数据已在本地磁盘）：
+- 已完成 → 立即自动恢复，开始做种
+- 未完成 → 保持暂停，等待用户手动处理
+
+这确保辅种操作「即加即生效」，无需用户手动启动。
 
 ```
 ┌────────────┐    ┌─────────────┐    ┌──────────────┐

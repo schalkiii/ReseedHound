@@ -3,8 +3,8 @@ import sys
 from pathlib import Path
 
 
-def setup_logger(level: str = "INFO", log_file: str = "logs/reseed.log") -> logging.Logger:
-    logger = logging.getLogger("reseed_puppy")
+def setup_logger(level: str = "INFO", log_file: str = "logs/seedhound.log") -> logging.Logger:
+    logger = logging.getLogger("seedhound")
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
 
     formatter = logging.Formatter(

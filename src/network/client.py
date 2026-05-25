@@ -4,7 +4,7 @@ from typing import Optional
 
 import aiohttp
 
-logger = logging.getLogger("reseed_puppy")
+logger = logging.getLogger("seedhound")
 
 
 class SiteClient:
@@ -33,7 +33,7 @@ class SiteClient:
             connector=connector,
             timeout=self._timeout,
             headers={
-                "User-Agent": "Reseed-Puppy-Standalone/2.0",
+                "User-Agent": "SeedHound/2.0",
                 "Accept": "application/json",
             },
         )
@@ -41,6 +41,17 @@ class SiteClient:
     async def close(self):
         if self._session:
             await self._session.close()
+
+    async def get_bytes(self, url: str) -> Optional[bytes]:
+        try:
+            async with self._semaphore:
+                async with self._session.get(url, timeout=self._timeout) as resp:
+                    if resp.status == 200:
+                        return await resp.read()
+                    logger.warning("下载失败 %s: HTTP %d", url, resp.status)
+        except Exception as e:
+            logger.warning("下载错误 %s: %s", url, e)
+        return None
 
     async def post_json(self, url: str, data: dict, retries: int = 1) -> Optional[dict]:
         for attempt in range(retries):
