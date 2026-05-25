@@ -31,6 +31,21 @@ def test_report_generator():
             "icc": 0,
             "青蛙": 0,
         },
+        site_match_counts={
+            "sewerpt": 6434,
+            "novahd": 5041,
+            "传道院": 3145,
+            "njtupt": 2451,
+            "13City": 2292,
+            "lajidui": 1920,
+            "昆仑": 1599,
+            "ptzone": 1429,
+            "hdbao": 1415,
+            "三月传媒": 1311,
+            "Sunny": 67,
+        },
+        site_succeeded={},
+        site_failed={},
     )
 
     generator = ReportGenerator()
@@ -47,7 +62,7 @@ def test_report_generator():
 
     md = generator.generate_markdown(stats)
     assert "37729" in md
-    assert "| sewerpt | 6434 |" in md
+    assert "| sewerpt | 6434 | 0 | 0 |" in md
 
 
 def test_feishu_notifier_noop():

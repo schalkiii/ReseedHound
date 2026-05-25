@@ -25,15 +25,29 @@ class ReportGenerator:
         lines.append("")
 
         lines.append(f"[ 站点匹配 ]  共匹配 {stats.matched_count} 个种子可跨站辅种")
-        if stats.site_details:
-            sorted_sites = sorted(
-                stats.site_details.items(),
-                key=lambda x: x[1],
-                reverse=True,
-            )
-            for site_name, count in sorted_sites:
-                if count > 0:
-                    lines.append(f"  {site_name:<14} {count:>6} 个")
+
+        site_match = stats.site_match_counts or {}
+        site_ok = stats.site_succeeded or {}
+        site_fail = stats.site_failed or {}
+
+        all_sites = set(site_match.keys()) | set(site_ok.keys()) | set(site_fail.keys())
+        if all_sites:
+            rows = []
+            for name in all_sites:
+                m = site_match.get(name, 0)
+                ok = site_ok.get(name, 0)
+                fail = site_fail.get(name, 0)
+                if m or ok or fail:
+                    rows.append((name, m, ok, fail))
+            rows.sort(key=lambda x: x[1], reverse=True)
+
+            header = f"  {'站点':<14} {'匹配':>6}  {'成功':>6}  {'失败':>6}"
+            lines.append(header)
+            lines.append(f"  {'-' * 14:<14} {'-' * 6:>6}  {'-' * 6:>6}  {'-' * 6:>6}")
+            for name, m, ok, fail in rows:
+                lines.append(
+                    f"  {name:<14} {m:>6}  {ok:>6}  {fail:>6}"
+                )
         else:
             lines.append("  (无站点返回匹配数据)")
         lines.append("")
@@ -41,13 +55,7 @@ class ReportGenerator:
         lines.append("[ 辅种结果 ]")
         lines.append(f"  成功辅种:  {stats.succeeded_count:>6}")
         lines.append(f"  失败辅种:  {stats.failed_count:>6}")
-
-        succeeded = stats.site_succeeded
-        if succeeded:
-            lines.append("")
-            lines.append("  各站点成功辅种数:")
-            for name, count in sorted(succeeded.items(), key=lambda x: x[1], reverse=True):
-                lines.append(f"    {name:<14} {count:>6} 个")
+        lines.append(f"  追踪器跳过:{stats.tracker_skip_count:>6}")
 
         dead = stats.failed_sites
         if dead:
@@ -83,22 +91,30 @@ class ReportGenerator:
         lines.append(f"已缓存: {cached}\n")
 
         lines.append(f"**站点匹配** （共 {stats.matched_count} 个种子可辅种）")
-        if stats.site_details:
-            sorted_sites = sorted(
-                stats.site_details.items(),
-                key=lambda x: x[1],
-                reverse=True,
-            )
-            active = [(n, c) for n, c in sorted_sites if c > 0]
-            if active:
-                lines.append("| 站点 | 匹配数 |")
-                lines.append("|------|--------|")
-                for site_name, count in active:
-                    lines.append(f"| {site_name} | {count} |")
+
+        site_match = stats.site_match_counts or {}
+        site_ok = stats.site_succeeded or {}
+        site_fail = stats.site_failed or {}
+
+        all_sites = set(site_match.keys()) | set(site_ok.keys()) | set(site_fail.keys())
+        if all_sites:
+            rows = []
+            for name in all_sites:
+                m = site_match.get(name, 0)
+                ok = site_ok.get(name, 0)
+                fail = site_fail.get(name, 0)
+                if m or ok or fail:
+                    rows.append((name, m, ok, fail))
+            rows.sort(key=lambda x: x[1], reverse=True)
+            lines.append("| 站点 | 匹配 | 成功 | 失败 |")
+            lines.append("|---|---:|---:|---:|")
+            for name, m, ok, fail in rows:
+                lines.append(f"| {name} | {m} | {ok} | {fail} |")
         lines.append("")
 
         lines.append("**辅种结果**")
         lines.append(f"成功: {stats.succeeded_count}  ")
-        lines.append(f"失败: {stats.failed_count}")
+        lines.append(f"失败: {stats.failed_count}  ")
+        lines.append(f"追踪器跳过: {stats.tracker_skip_count}")
 
         return "\n".join(lines)
