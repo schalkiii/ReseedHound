@@ -9,7 +9,7 @@ from src.engine.seeder import ReseedEngine  # noqa: E402
 from src.notify.feishu import FeishuNotifier  # noqa: E402
 from src.report.generator import ReportGenerator  # noqa: E402
 from src.storage.config import Config  # noqa: E402
-from src.utils.logger import setup_logger  # noqa: E402
+from src.utils.logger import setup_logger, trim_log_file  # noqa: E402
 
 
 async def main():
@@ -38,9 +38,11 @@ async def main():
     )
 
     log_cfg = config.log_config
+    log_file = log_cfg.get("file", "logs/seedhound.log")
+    trim_log_file(log_file, keep_runs=3)
     logger = setup_logger(
         level=log_cfg.get("level", "INFO"),
-        log_file=log_cfg.get("file", "logs/seedhound.log"),
+        log_file=log_file,
     )
 
     engine = ReseedEngine(config)
