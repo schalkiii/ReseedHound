@@ -45,7 +45,10 @@ class SiteClient:
     async def get_bytes(self, url: str) -> Optional[bytes]:
         try:
             async with self._semaphore:
-                async with self._session.get(url, timeout=self._timeout) as resp:
+                headers = {"Accept": "application/x-bittorrent, */*"}
+                async with self._session.get(
+                    url, timeout=self._timeout, headers=headers,
+                ) as resp:
                     if resp.status == 200:
                         return await resp.read()
                     logger.warning("下载失败 %s: HTTP %d", url, resp.status)
