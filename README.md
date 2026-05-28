@@ -1,6 +1,6 @@
 # SeedHound
 
-> 继承自 [reseed-puppy](https://github.com/yuusakurinosekai/reseed-puppy)，Hound（猎犬）象征更敏捷、更专业的辅种体验。Puppy 是小狗，Hound 是训练有素的猎犬——继承其基因，但嗅觉更敏锐、速度更快、自动化程度更高。
+> 继承自 [reseed-puppy](https://github.com/Reseed-Puppy/Reseed-Puppy)，Hound（猎犬）象征更敏捷、更专业的辅种体验。Puppy 是小狗，Hound 是训练有素的猎犬——继承其基因，但嗅觉更敏锐、速度更快、自动化程度更高。
 
 最简高性能 Python 辅种引擎 —— 跨 PT 站点间的高效种子调度工具，猎犬般自动嗅探并匹配可辅种任务。
 
