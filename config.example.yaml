@@ -4,7 +4,9 @@
 global:
   concurrency: 20
   batch_size: 100
-  request_timeout: 15
+  api_timeout: 10
+  download_timeout: 30
+  download_interval: 5.0
   retry_count: 2
   retry_delay: 2.0
 
