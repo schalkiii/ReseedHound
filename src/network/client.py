@@ -1,10 +1,105 @@
 import asyncio
 import logging
+import re
+import time
 from typing import Optional
 
 import aiohttp
+from yarl import URL
 
 logger = logging.getLogger("seedhound")
+
+DEAD_TORRENT_PATTERNS = [
+    (re.compile(r"没有权限|无权访问|无权限"), "permission_denied"),
+    (re.compile(r"种子已删除|已被删除|已被移除|torrent.*deleted|torrent.*removed", re.IGNORECASE), "torrent_deleted"),
+    (re.compile(r"不存在|not found|no such|404", re.IGNORECASE), "not_found"),
+    (re.compile(r"未登录|请登录|login|sign.?in", re.IGNORECASE), "auth_required"),
+    (re.compile(r"禁止访问|access denied|forbidden|403", re.IGNORECASE), "forbidden"),
+]
+
+
+class DeadTorrentCache:
+    def __init__(self):
+        self._dead: set[tuple[str, int]] = set()
+        self._lock = asyncio.Lock()
+
+    def is_dead(self, site_name: str, torrent_id: int) -> bool:
+        return (site_name, torrent_id) in self._dead
+
+    async def mark_dead(self, site_name: str, torrent_id: int):
+        async with self._lock:
+            self._dead.add((site_name, torrent_id))
+
+    def size(self) -> int:
+        return len(self._dead)
+
+
+def _detect_html_reason(data: bytes) -> Optional[str]:
+    text = data.decode("utf-8", errors="replace")
+    for pattern, reason in DEAD_TORRENT_PATTERNS:
+        if pattern.search(text):
+            return reason
+    return None
+
+
+RATE_LIMIT_HINT_PATTERNS = [
+    (re.compile(r"(\d+)\s*分钟后"), "minutes"),
+    (re.compile(r"(\d+)\s*分钟后重试"), "minutes"),
+    (re.compile(r"(\d+)\s*分钟后可下载"), "minutes"),
+    (re.compile(r"(\d+)\s*秒后"), "seconds"),
+    (re.compile(r"wait\s+(\d+)\s+minute", re.IGNORECASE), "minutes"),
+    (re.compile(r"try\s+again\s+in\s+(\d+)\s+second", re.IGNORECASE), "seconds"),
+    (re.compile(r"retry\s+after\s+(\d+)\s+second", re.IGNORECASE), "seconds"),
+]
+
+RATE_LIMIT_KEYWORDS = [
+    "过于频繁", "频繁", "rate limit", "too many", "请稍后", "过于频繁",
+    "rate limit reached", "请求过于频繁", "请稍候",
+]
+
+
+def _parse_rate_limit_response(data: bytes, content_type: str) -> Optional[float]:
+    if len(data) > 10000:
+        return None
+    try:
+        text = data.decode("utf-8", errors="replace")
+        text_first = text[:500]
+        for kw in RATE_LIMIT_KEYWORDS:
+            if kw in text_first:
+                for pattern, unit in RATE_LIMIT_HINT_PATTERNS:
+                    m = pattern.search(text_first)
+                    if m:
+                        val = int(m.group(1))
+                        delay = val * 60 if unit == "minutes" else val
+                        logger.info("检测到限流提示，建议等待 %d 秒 (%d %s)", delay, val, unit)
+                        return max(delay, 10.0)
+                return 60.0
+    except Exception:
+        pass
+    return None
+
+
+def _is_likely_text_error(data: bytes, content_type: str) -> Optional[float]:
+    if len(data) > 500:
+        return None
+    if b"<html" in data[:200].lower() or b"<!doctype" in data[:200].lower():
+        return None
+    try:
+        text = data.decode("utf-8", errors="replace")
+        text_first = text[:200]
+        for kw in RATE_LIMIT_KEYWORDS:
+            if kw in text_first:
+                for pattern, unit in RATE_LIMIT_HINT_PATTERNS:
+                    m = pattern.search(text_first)
+                    if m:
+                        val = int(m.group(1))
+                        delay = val * 60 if unit == "minutes" else val
+                        logger.info("检测到限流提示，建议等待 %d 秒 (%d %s)", delay, val, unit)
+                        return max(delay, 10.0)
+                return 60.0
+        return None
+    except Exception:
+        return None
 
 
 class SiteClient:
@@ -12,49 +107,171 @@ class SiteClient:
         self,
         concurrency: int = 20,
         timeout: float = 15.0,
+        download_timeout: float = 30.0,
         retry_count: int = 2,
         retry_delay: float = 2.0,
+        dead_cache: Optional[DeadTorrentCache] = None,
+        site_cookies: Optional[dict[str, str]] = None,
+        download_interval: float = 5.0,
+        host_intervals: Optional[dict[str, float]] = None,
     ):
         self._concurrency = concurrency
         self._timeout = aiohttp.ClientTimeout(total=timeout)
+        self._download_timeout_value = download_timeout
         self._retry_count = retry_count
         self._retry_delay = retry_delay
         self._session: Optional[aiohttp.ClientSession] = None
         self._semaphore = asyncio.Semaphore(concurrency)
+        self._dead_cache = dead_cache or DeadTorrentCache()
+        self._site_cookies = site_cookies or {}
+        self._download_interval = download_interval
+        self._host_intervals = host_intervals or {}
+        self._host_last_request: dict[str, float] = {}
+        self._host_locks: dict[str, asyncio.Lock] = {}
+        self._host_backoff: dict[str, float] = {}
 
     async def start(self):
         connector = aiohttp.TCPConnector(
             limit=self._concurrency * 2,
-            limit_per_host=2,
+            limit_per_host=6,
             ttl_dns_cache=300,
-            force_close=False,
+            force_close=True,
         )
+        cookie_jar = aiohttp.CookieJar()
         self._session = aiohttp.ClientSession(
             connector=connector,
             timeout=self._timeout,
+            cookie_jar=cookie_jar,
             headers={
                 "User-Agent": "SeedHound/2.0",
                 "Accept": "application/json",
             },
         )
+        for domain, cookie_str in self._site_cookies.items():
+            if cookie_str:
+                parsed_url = URL(domain)
+                for item in cookie_str.split(";"):
+                    item = item.strip()
+                    if "=" in item:
+                        key, _, value = item.partition("=")
+                        self._session.cookie_jar.update_cookies(
+                            {key.strip(): value.strip()}, parsed_url
+                        )
 
     async def close(self):
         if self._session:
             await self._session.close()
 
-    async def get_bytes(self, url: str) -> Optional[bytes]:
+    async def get_bytes(
+        self, url: str, site_name: str = "", torrent_id: int = 0,
+    ) -> tuple[Optional[bytes], str]:
         try:
+            parsed = URL(url)
+            host = parsed.host or ""
+            if host:
+                host_interval = self._host_intervals.get(host, self._download_interval)
+            else:
+                host_interval = self._download_interval
+            if host_interval > 0 and host:
+                if host not in self._host_locks:
+                    self._host_locks[host] = asyncio.Lock()
+                async with self._host_locks[host]:
+                    now = time.monotonic()
+                    last = self._host_last_request.get(host, 0)
+                    backoff = self._host_backoff.get(host, 1.0)
+                    wait_time = (host_interval * backoff) - (now - last)
+                    if wait_time > 0:
+                        await asyncio.sleep(wait_time)
+                    self._host_last_request[host] = time.monotonic()
+
             async with self._semaphore:
-                headers = {"Accept": "application/x-bittorrent, */*"}
+                headers = {"Accept": "*/*"}
+                download_timeout = aiohttp.ClientTimeout(total=self._download_timeout_value)
                 async with self._session.get(
-                    url, timeout=self._timeout, headers=headers,
+                    url, timeout=download_timeout, headers=headers,
                 ) as resp:
-                    if resp.status == 200:
-                        return await resp.read()
-                    logger.warning("下载失败 %s: HTTP %d", url, resp.status)
+                    content_type = resp.headers.get("Content-Type", "")
+                    data = await resp.read()
+
+                    if resp.status != 200:
+                        logger.warning(
+                            "下载失败 %s: HTTP %d (Content-Type: %s)",
+                            url, resp.status, content_type,
+                        )
+                        if resp.status in (301, 302, 303, 307, 308):
+                            location = resp.headers.get("Location", "")
+                            logger.warning("  重定向目标: %s", location)
+                            if "login" in location.lower():
+                                logger.warning(
+                                    "  站点 %s 需要登录 Cookie，已标记为 auth_required",
+                                    site_name or "未知",
+                                )
+                                if site_name and torrent_id:
+                                    await self._dead_cache.mark_dead(site_name, torrent_id)
+                                return None, "auth_redirect"
+                        limit_delay = _parse_rate_limit_response(data, content_type)
+                        if limit_delay is not None:
+                            logger.warning(
+                                "  服务器返回限流状态码 %d (Content-Type: %s, 大小: %d)",
+                                resp.status, content_type, len(data),
+                            )
+                            if host:
+                                self._host_backoff[host] = max(
+                                    self._host_backoff.get(host, 1.0),
+                                    limit_delay / max(host_interval, 1.0),
+                                )
+                            return None, "rate_limit"
+                        return None, f"http_{resp.status}"
+
+                    if b"<html" in data[:200].lower() or b"<!doctype" in data[:200].lower():
+                        reason = _detect_html_reason(data)
+                        logger.warning(
+                            "下载返回HTML而非torrent: %s (Content-Type: %s, 大小: %d, 原因: %s)",
+                            url, content_type, len(data), reason or "未知",
+                        )
+                        if reason and reason != "unknown" and site_name and torrent_id:
+                            await self._dead_cache.mark_dead(site_name, torrent_id)
+                        return None, f"html_{reason}" if reason else "html_unknown"
+
+                    limit_delay = _is_likely_text_error(data, content_type)
+                    if limit_delay is not None:
+                        logger.warning(
+                            "下载返回文本错误而非torrent: %s (Content-Type: %s, 大小: %d)",
+                            url, content_type, len(data),
+                        )
+                        if host:
+                            self._host_backoff[host] = max(
+                                self._host_backoff.get(host, 1.0),
+                                limit_delay / max(host_interval, 1.0),
+                            )
+                        return None, "rate_limit"
+
+                    if not data or len(data) < 20:
+                        logger.warning(
+                            "下载数据过短 (%d 字节): %s (Content-Type: %s)",
+                            len(data), url, content_type,
+                        )
+                        return None, "too_short"
+
+                    return data, ""
+        except asyncio.TimeoutError:
+            logger.warning("下载超时: %s", url)
+            return None, "timeout"
+        except aiohttp.ClientError as e:
+            err_msg = str(e).strip() if str(e).strip() else type(e).__name__
+            logger.warning("下载错误 %s: %s", url, err_msg)
+            return None, "connection_error"
         except Exception as e:
-            logger.warning("下载错误 %s: %s", url, e)
-        return None
+            err_msg = str(e).strip() if str(e).strip() else type(e).__name__
+            logger.warning("下载错误 %s: %s", url, err_msg)
+            return None, "connection_error"
+
+    async def try_download(
+        self, url: str, site_name: str = "", torrent_id: int = 0,
+    ) -> tuple[Optional[bytes], str]:
+        if site_name and torrent_id and self._dead_cache.is_dead(site_name, torrent_id):
+            return None, "dead_cached"
+        return await self.get_bytes(url, site_name=site_name, torrent_id=torrent_id)
 
     async def post_json(self, url: str, data: dict, retries: int = 1) -> Optional[dict]:
         for attempt in range(retries):

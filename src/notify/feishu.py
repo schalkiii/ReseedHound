@@ -22,82 +22,117 @@ class FeishuNotifier:
         }
         return await self._send(payload)
 
-    async def send_card(self, title: str, content: str) -> bool:
+    async def send_report_card(self, stats) -> bool:
+        elements = self._build_card_elements(stats)
         payload = {
             "msg_type": "interactive",
             "card": {
                 "header": {
                     "title": {
                         "tag": "plain_text",
-                        "content": title,
+                        "content": "SeedHound 辅种报告",
                     },
                     "template": "blue",
                 },
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": content,
-                    },
-                ],
+                "elements": elements,
             },
         }
         return await self._send(payload)
 
-    async def send_report_card(self, stats) -> bool:
-        return await self.send_card(
-            title="SeedHound 辅种报告",
-            content=self._build_report_markdown(stats),
-        )
-
-    def _build_report_markdown(self, stats) -> str:
-        parts = []
+    def _build_card_elements(self, stats) -> list[dict]:
+        elements = []
 
         unique_count = stats.total_torrents - stats.duplicate_count
-        parts.append(
-            f"**扫描统计**\n"
-            f"本地种子 {stats.total_torrents} | "
-            f"去重 {stats.duplicate_count} | "
-            f"唯一 {unique_count} | "
-            f"新增 {stats.new_torrents}\n"
-            f"全站匹配 {stats.matched_count} | "
-            f"追踪器跳过 {stats.tracker_skip_count} | "
-            f"成功 {stats.succeeded_count} | "
-            f"失败 {stats.failed_count} | "
-            f"耗时 {stats.duration_str}"
-        )
+
+        if stats.succeeded_count > 0:
+            status_icon = "✅"
+        elif stats.matched_count > 0:
+            status_icon = "⚠️"
+        else:
+            status_icon = "❌"
+
+        elements.append({
+            "tag": "markdown",
+            "content": (
+                f"**{{0}} 总览**\n\n"
+                f"🟢 辅种成功　**{stats.succeeded_count}**　　　　"
+                f"🔴 下载失败　**{stats.failed_count}**\n"
+                f"🎯 全站匹配　**{stats.matched_count}**　　　　"
+                f"⏭️ 追踪器跳过 **{stats.tracker_skip_count}**\n"
+                f"📦 扫描种子　**{stats.total_torrents}**　　　　"
+                f"🔄 去重　　　**{stats.duplicate_count}**\n"
+                f"🆕 新增种子　**{stats.new_torrents}**　　　　　"
+                f"📌 唯一种子　**{unique_count}**"
+            ).format(status_icon),
+        })
 
         site_match = stats.site_match_counts or {}
         site_ok = stats.site_succeeded or {}
         site_fail = stats.site_failed or {}
-
         all_sites = set(site_match.keys()) | set(site_ok.keys()) | set(site_fail.keys())
+
         if all_sites:
+            elements.append({"tag": "hr"})
+
             rows = []
             for name in all_sites:
                 m = site_match.get(name, 0)
                 ok = site_ok.get(name, 0)
                 fail = site_fail.get(name, 0)
                 if m or ok or fail:
-                    rows.append((name, m, ok, fail))
-            rows.sort(key=lambda x: x[1], reverse=True)
+                    if ok > 0 and fail == 0:
+                        icon = "🟢"
+                    elif ok > 0:
+                        icon = "🟡"
+                    elif m > 0:
+                        icon = "🔵"
+                    else:
+                        icon = "⚪"
+                    rows.append((icon, name, m, ok, fail))
+            rows.sort(key=lambda x: (x[4] == 0, -x[3], -x[2]))
 
-            table_lines = ["| 站点 | 匹配 | 成功 | 失败 |", "|---|---:|---:|---:|"]
-            for name, m, ok, fail in rows:
-                table_lines.append(f"| {name} | {m} | {ok} | {fail} |")
-            parts.append("**站点详情**\n" + "\n".join(table_lines))
+            table_lines = [
+                "**📈 站点详情**\n",
+                "| 状态 | 站点 | 匹配 | 成功 | 失败 |",
+                "| :---: | :--- | ---: | ---: | ---: |",
+            ]
+            for icon, name, m, ok, fail in rows:
+                table_lines.append(
+                    f"| {icon} | {name} | {m} | {ok} | {fail} |"
+                )
+            elements.append({
+                "tag": "markdown",
+                "content": "\n".join(table_lines),
+            })
 
-        dead = stats.failed_sites
-        if dead:
-            dead_str = "、".join(dead)
-            parts.append(f"**无匹配站点 ({len(dead)} 个)**\n" + dead_str)
+        elements.append({"tag": "hr"})
 
         site_total = len(stats.site_details)
         active = sum(1 for c in stats.site_details.values() if c > 0)
-        parts.append(
-            f"启用 {site_total} | 命中 {active} | 未命中 {site_total - active}"
-        )
+        dead_sites = stats.failed_sites
+        dead_count = len(dead_sites) if dead_sites else 0
 
-        return "\n\n".join(parts)
+        footer_parts = [f"⏱ 耗时 **{stats.duration_str}**"]
+        footer_parts.append(f"📡 {site_total} 站点")
+        footer_parts.append(f"🎯 {active} 命中")
+        footer_parts.append(f"❌ {dead_count} 无匹配")
+        if stats.dead_count:
+            footer_parts.append(f"💀 {stats.dead_count} 死种")
+
+        elements.append({
+            "tag": "note",
+            "elements": [{"tag": "plain_text", "content": " · ".join(footer_parts)}],
+        })
+
+        if dead_sites and len(dead_sites) <= 10:
+            elements.append({
+                "tag": "note",
+                "elements": [
+                    {"tag": "plain_text", "content": f"无匹配: {' '.join(dead_sites)}"}
+                ],
+            })
+
+        return elements
 
     async def _send(self, payload: dict) -> bool:
         try:

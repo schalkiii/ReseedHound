@@ -41,6 +41,21 @@ class TorrentParser:
             announce = torrent.get(b"announce")
             if isinstance(announce, bytes):
                 result["announce"] = announce.decode("utf-8", errors="replace")
+            elif isinstance(announce, str):
+                result["announce"] = announce
+
+            announce_list = torrent.get(b"announce-list")
+            if announce_list is not None:
+                urls = []
+                for tier in announce_list:
+                    if isinstance(tier, (list, tuple)):
+                        for url in tier:
+                            if isinstance(url, bytes):
+                                urls.append(url.decode("utf-8", errors="replace"))
+                            elif isinstance(url, str):
+                                urls.append(url)
+                if urls:
+                    result["announce_list"] = urls
 
             return result
         except Exception:

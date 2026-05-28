@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlparse
 
-from ..network.client import SiteClient
+from ..network.client import DeadTorrentCache, SiteClient
 from ..storage.cache import TorrentCache
 from ..storage.config import Config
 from .downloader import DownloaderBase, create_downloader
@@ -23,6 +23,7 @@ class ReseedStats:
     matched_count: int = 0
     succeeded_count: int = 0
     failed_count: int = 0
+    dead_count: int = 0
     site_details: dict = field(default_factory=dict)
     site_match_counts: dict = field(default_factory=dict)
     site_succeeded: dict = field(default_factory=dict)
@@ -48,11 +49,31 @@ class ReseedEngine:
     def __init__(self, config: Config):
         self._config = config
         self._cache = TorrentCache(config.db_path)
+        self._dead_cache = DeadTorrentCache()
+
+        site_cookies = {}
+        host_intervals = {}
+        for s in config.sites:
+            cookie = s.get("cookie") or s.get("cookies")
+            if cookie and s.get("url"):
+                site_cookies[s["url"]] = cookie
+            site_interval = s.get("download_interval")
+            if site_interval and s.get("url"):
+                from yarl import URL
+                host = URL(s["url"]).host
+                if host:
+                    host_intervals[host] = float(site_interval)
+
         self._client = SiteClient(
             concurrency=config.global_config.get("concurrency", 20),
-            timeout=config.global_config.get("request_timeout", 15),
+            timeout=config.global_config.get("api_timeout", 10),
+            download_timeout=config.global_config.get("download_timeout", 30),
             retry_count=config.global_config.get("retry_count", 2),
             retry_delay=config.global_config.get("retry_delay", 2.0),
+            download_interval=config.global_config.get("download_interval", 5.0),
+            host_intervals=host_intervals,
+            dead_cache=self._dead_cache,
+            site_cookies=site_cookies,
         )
         self._downloader: Optional[DownloaderBase] = None
         self._batch_size = config.global_config.get("batch_size", 100)
@@ -110,9 +131,10 @@ class ReseedEngine:
             logger.info("[演练模式] 跳过阶段3（添加种子到下载器）")
 
         self._stats.end_time = time.time()
+        self._stats.dead_count = self._dead_cache.size()
         logger.info("=" * 60)
         logger.info(
-            "辅种完成: 扫描=%d, 去重=%d, 新=%d, 匹配=%d, 追踪器跳过=%d, 成功=%d, 失败=%d, 耗时=%s",
+            "辅种完成: 扫描=%d, 去重=%d, 新=%d, 匹配=%d, 追踪器跳过=%d, 成功=%d, 失败=%d, 死种=%d, 耗时=%s",
             self._stats.total_torrents,
             self._stats.duplicate_count,
             self._stats.new_torrents,
@@ -120,6 +142,7 @@ class ReseedEngine:
             self._stats.tracker_skip_count,
             self._stats.succeeded_count,
             self._stats.failed_count,
+            self._stats.dead_count,
             self._stats.duration_str,
         )
         logger.info("=" * 60)
@@ -222,6 +245,16 @@ class ReseedEngine:
             return
 
         add_sem = asyncio.Semaphore(10)
+        no_access_sites: set[str] = set()
+        site_serious_errors: dict[str, int] = {}
+        MAX_SERIOUS_ERRORS = 3
+
+        SERIOUS_ERRORS = frozenset({
+            "http_401", "http_403", "http_404", "http_410",
+            "html_permission_denied", "html_torrent_deleted", "html_not_found",
+            "html_forbidden", "html_auth_required", "auth_redirect",
+        })
+
         site_configs = {s["name"]: s for s in sites}
 
         domain_to_site = {}
@@ -264,6 +297,9 @@ class ReseedEngine:
         if stale_count:
             logger.info("%d 条记录对应的种子已不在qB中（将重新尝试添加）", stale_count)
 
+        qb_info_hashes = await self._downloader.get_all_info_hashes()
+        logger.info("qB 中现有种子: %d 个", len(qb_info_hashes))
+
         async def add_one(pieces_hash: str, matches: list):
             async with add_sem:
                 entry = self._pieces_hash_index.get(pieces_hash)
@@ -282,6 +318,8 @@ class ReseedEngine:
                 torrent_tag = self._config.downloader_config.get("tag", "SeedHound")
 
                 for site_name, torrent_id, site_url in matches:
+                    if site_name in no_access_sites:
+                        continue
                     if (pieces_hash, site_name, torrent_id) in valid_reseeded:
                         continue
                     if site_name in qb_site_seeding.get(pieces_hash, set()):
@@ -296,21 +334,38 @@ class ReseedEngine:
                         f"&passkey={site_cfg['passkey']}"
                     )
 
-                    torrent_data = await self._client.get_bytes(dl_url)
+                    torrent_data, error_reason = await self._client.try_download(
+                        dl_url, site_name=site_name, torrent_id=torrent_id,
+                    )
                     if not torrent_data:
                         self._stats.failed_count += 1
+                        if error_reason in SERIOUS_ERRORS:
+                            site_serious_errors[site_name] = site_serious_errors.get(site_name, 0) + 1
+                            if site_serious_errors[site_name] >= MAX_SERIOUS_ERRORS:
+                                if site_name not in no_access_sites:
+                                    no_access_sites.add(site_name)
+                                    logger.warning(
+                                        "站点 %s (%d次严重错误: %s)，跳过后续下载",
+                                        site_name, site_serious_errors[site_name], error_reason,
+                                    )
                         continue
 
-                    parsed = TorrentParser.parse_bytes(torrent_data)
+                    parsed = TorrentParser.parse_bytes(
+                        torrent_data,
+                        file_name=entry.get("file_name", ""),
+                    )
                     if not parsed:
                         self._stats.failed_count += 1
+                        head_hex = torrent_data[:20].hex() if len(torrent_data) >= 20 else torrent_data.hex()
                         logger.warning(
-                            "下载的不是有效torrent文件: %s (站点: %s)",
-                            entry["file_name"], site_name,
+                            "下载的不是有效torrent文件: %s (站点: %s, 大小: %d, 前20字节: %s)",
+                            entry.get("file_name", "?"), site_name, len(torrent_data), head_hex,
                         )
                         continue
                     new_info_hash = parsed["info_hash"]
 
+                    if new_info_hash in qb_info_hashes:
+                        continue
                     success = await self._downloader.add_torrent(
                         torrent_files=torrent_data,
                         save_path=dl_info["save_path"],
@@ -332,6 +387,7 @@ class ReseedEngine:
                         )
 
                         if new_info_hash:
+                            qb_info_hashes.add(new_info_hash)
                             await asyncio.sleep(0.3)
                             ti = await self._downloader.get_torrent_info(
                                 new_info_hash

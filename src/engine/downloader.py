@@ -35,6 +35,16 @@ class DownloaderBase(ABC):
     async def close(self):
         ...
 
+    @abstractmethod
+    async def get_all_info_hashes(self) -> set[str]:
+        ...
+
+    @abstractmethod
+    async def add_trackers_to_torrent(
+        self, info_hash: str, urls: list[str],
+    ) -> bool:
+        ...
+
 
 class QbittorrentDownloader(DownloaderBase):
     def __init__(self, host: str, port: int, username: str, password: str):
@@ -120,6 +130,33 @@ class QbittorrentDownloader(DownloaderBase):
             logger.debug("恢复种子失败 %s: %s", info_hash, e)
             return False
 
+    async def get_all_info_hashes(self) -> set[str]:
+        try:
+            torrents = await asyncio.get_event_loop().run_in_executor(
+                None,
+                self._client.torrents_info,
+            )
+            return {t.hash for t in torrents}
+        except Exception as e:
+            logger.error("获取qB种子列表失败: %s", e)
+            return set()
+
+    async def add_trackers_to_torrent(
+        self, info_hash: str, urls: list[str],
+    ) -> bool:
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._client.torrents_add_trackers(
+                    torrent_hash=info_hash, urls=urls,
+                ),
+            )
+            logger.debug("已添加tracker到 %s: %s", info_hash, urls)
+            return True
+        except Exception as e:
+            logger.debug("添加tracker失败 %s: %s", info_hash, e)
+            return False
+
     async def close(self):
         if self._client:
             self._client = None
@@ -185,6 +222,19 @@ class TransmissionDownloader(DownloaderBase):
         except Exception as e:
             logger.debug("恢复种子失败 %s: %s", info_hash, e)
             return False
+
+    async def get_all_info_hashes(self) -> set[str]:
+        try:
+            torrents = self._client.get_torrents()
+            return {t.hashString for t in torrents}
+        except Exception as e:
+            logger.error("获取Tr种子列表失败: %s", e)
+            return set()
+
+    async def add_trackers_to_torrent(
+        self, info_hash: str, urls: list[str],
+    ) -> bool:
+        return False
 
     async def close(self):
         self._client = None
