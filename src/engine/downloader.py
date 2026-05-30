@@ -130,6 +130,23 @@ class QbittorrentDownloader(DownloaderBase):
             logger.debug("恢复种子失败 %s: %s", info_hash, e)
             return False
 
+    async def _reconnect(self) -> bool:
+        try:
+            import qbittorrentapi
+            self._client = qbittorrentapi.Client(
+                host=f"{self._host}:{self._port}",
+                username=self._username,
+                password=self._password,
+            )
+            await asyncio.get_event_loop().run_in_executor(
+                None, self._client.auth_log_in,
+            )
+            logger.info("qBittorrent 重连成功")
+            return True
+        except Exception as e:
+            logger.warning("qBittorrent 重连失败: %s", e)
+            return False
+
     async def get_all_info_hashes(self) -> set[str]:
         try:
             torrents = await asyncio.get_event_loop().run_in_executor(
@@ -138,7 +155,16 @@ class QbittorrentDownloader(DownloaderBase):
             )
             return {t.hash for t in torrents}
         except Exception as e:
-            logger.error("获取qB种子列表失败: %s", e)
+            logger.warning("获取qB种子列表失败: %s, 重新登录重试...", e)
+            if await self._reconnect():
+                try:
+                    torrents = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        self._client.torrents_info,
+                    )
+                    return {t.hash for t in torrents}
+                except Exception as e2:
+                    logger.error("获取qB种子列表重试失败: %s", e2)
             return set()
 
     async def add_trackers_to_torrent(

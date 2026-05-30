@@ -30,12 +30,22 @@ async def main():
         default=None,
         help="指定站点名称进行辅种，多个用逗号分隔（不指定则处理全部站点）",
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default=None,
+        choices=["pieces_hash", "jackett", "both"],
+        help="辅种模式: pieces_hash(默认), jackett, both",
+    )
     args = parser.parse_args()
 
     config = Config(
         config_path="config.yaml",
         sites_path="sites.yaml",
     )
+
+    if args.mode:
+        config._config.setdefault("global", {})["mode"] = args.mode
 
     log_cfg = config.log_config
     log_file = log_cfg.get("file", "logs/seedhound.log")

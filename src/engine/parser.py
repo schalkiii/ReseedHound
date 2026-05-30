@@ -38,6 +38,21 @@ class TorrentParser:
                 "file_path": file_path,
             }
 
+            torrent_name = info.get(b"name")
+            if isinstance(torrent_name, bytes):
+                result["torrent_name"] = torrent_name.decode("utf-8", errors="replace")
+            elif isinstance(torrent_name, str):
+                result["torrent_name"] = torrent_name
+
+            if b"length" in info:
+                result["total_size"] = info[b"length"]
+            elif b"files" in info:
+                total = 0
+                for f in info[b"files"]:
+                    if isinstance(f, dict) and b"length" in f:
+                        total += f[b"length"]
+                result["total_size"] = total
+
             announce = torrent.get(b"announce")
             if isinstance(announce, bytes):
                 result["announce"] = announce.decode("utf-8", errors="replace")

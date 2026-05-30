@@ -38,6 +38,27 @@ class Config:
         return self._config.get("notify", {}).get("feishu", {})
 
     @property
+    def jackett_config(self) -> dict:
+        return self._config.get("jackett", {})
+
+    @property
+    def jackett_enabled(self) -> bool:
+        jc = self.jackett_config
+        return jc.get("enabled", False) and bool(jc.get("api_key"))
+
+    @property
+    def jackett_url(self) -> str:
+        return self.jackett_config.get("url", "http://localhost:9117")
+
+    @property
+    def jackett_api_key(self) -> str:
+        return self.jackett_config.get("api_key", "")
+
+    @property
+    def operation_mode(self) -> str:
+        return self._config.get("global", {}).get("mode", "pieces_hash")
+
+    @property
     def sites(self) -> list[dict]:
         return [
             s for s in self._sites.get("sites", [])

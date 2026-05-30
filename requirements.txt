@@ -2,3 +2,5 @@ aiohttp>=3.9.0
 aiosqlite>=0.20.0
 pyyaml>=6.0
 qbittorrent-api>=2024.2.59
+transmission-rpc>=7.0.0
+yarl>=1.9.0

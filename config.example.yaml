@@ -9,6 +9,7 @@ global:
   download_interval: 5.0
   retry_count: 2
   retry_delay: 2.0
+  mode: pieces_hash
 
 db:
   path: data/cache.db
@@ -32,3 +33,11 @@ notify:
   feishu:
     webhook_url: ""
     secret: ""
+
+jackett:
+  enabled: false
+  url: "http://localhost:9117"
+  api_key: ""
+  concurrency: 5
+  search_interval: 1.0
+  timeout: 30

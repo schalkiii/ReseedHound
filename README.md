@@ -6,15 +6,15 @@
 
 ## 为什么选择 SeedHound
 
-| 对比维度       |  reseed-puppy   |   MP青蛙辅种     |       **SeedHound**       |
-| -------------- | :-------------: | :-------------: | :-----------------------: |
-| **运行模式**   | WebUI，串行全量执行 | WebUI，串行全量执行 |  纯 CLI，全链路异步并行，可指定任意站点运行   |
-| **日志查看**   |   WebUI 内置，**站多种多会卡死且日志查看不便**    |   WebUI 内置    | 控制台 + 文件日志自动轮转 |
-| **配置存储**   |     数据库      |     **数据库,曾多次出现无法保存配置只能重装**      |      YAML 纯文本文件，复制即迁移      |
-| **配置方式**   |   WebUI 表单    |   WebUI 表单    |    文本编辑器直接编辑，编辑即配置    |
-| **批量处理**   |  逐个站点串行   |  逐个站点串行   |      多站点异步并行，实测4万种一百站点大约20分钟       |
-| **大规模种子** | WebUI 渲染开销  | WebUI 渲染开销  |      无 UI 渲染开销       |
-| **通知推送**   |     不支持      |      支持       |      飞书仪卡片式推送       |
+| 对比维度       |                 reseed-puppy                 |                MP青蛙辅种                 |                **SeedHound**                |
+| -------------- | :------------------------------------------: | :---------------------------------------: | :-----------------------------------------: |
+| **运行模式**   |             WebUI，串行全量执行              |            WebUI，串行全量执行            | 纯 CLI，全链路异步并行，可指定任意站点运行  |
+| **日志查看**   | WebUI 内置，**站多种多会卡死且日志查看不便** |                WebUI 内置                 |          控制台 + 文件日志自动轮转          |
+| **配置存储**   |                    数据库                    | **数据库,曾多次出现无法保存配置只能重装** |         YAML 纯文本文件，复制即迁移         |
+| **配置方式**   |                  WebUI 表单                  |                WebUI 表单                 |       文本编辑器直接编辑，编辑即配置        |
+| **批量处理**   |                 逐个站点串行                 |               逐个站点串行                | 多站点异步并行，实测4万种一百站点大约20分钟 |
+| **大规模种子** |                WebUI 渲染开销                |              WebUI 渲染开销               |               无 UI 渲染开销                |
+| **通知推送**   |                    不支持                    |                   支持                    |              飞书仪卡片式推送               |
 
 ## 项目亮点
 
@@ -183,6 +183,14 @@ notify:
   feishu:
     webhook_url: "" # 飞书机器人 Webhook 地址
     secret: "" # 飞书签名密钥（可选）
+
+jackett:
+  enabled: true
+  url: "http://localhost:9117"
+  api_key: "your_jackett_api_key"
+  concurrency: 5 # 搜索并发数
+  search_interval: 1.0 # 搜索间隔（秒）
+  timeout: 30 # 请求超时（秒）
 ```
 
 编辑 `sites.yaml` 填入各 PT 站点的 passkey：
@@ -201,6 +209,11 @@ sites:
 # 正常运行（全站点辅种）
 python run.py
 
+# 指定辅种模式
+python run.py --mode both     # pieces_hash + Jackett 双模式
+python run.py --mode jackett  # 仅 Jackett 模式
+python run.py --mode pieces_hash  # 仅 pieces_hash 模式（默认）
+
 # 演练模式（只查询不添加）
 python run.py --dry-run
 
@@ -211,11 +224,12 @@ python run.py --site 站点A,站点B,站点C
 python run.py --no-feishu
 ```
 
-| 参数           | 说明                           |
-| -------------- | ------------------------------ |
-| `--dry-run`    | 演练模式，只查询匹配不添加种子 |
-| `--site S1,S2` | 仅对指定站点辅种（逗号分隔）   |
-| `--no-feishu`  | 跳过飞书通知推送               |
+| 参数           | 说明                                               |
+| -------------- | -------------------------------------------------- |
+| `--mode MODE`  | 辅种模式：`pieces_hash`(默认) / `jackett` / `both` |
+| `--dry-run`    | 演练模式，只查询匹配不添加种子                     |
+| `--site S1,S2` | 仅对指定站点辅种（逗号分隔）                       |
+| `--no-feishu`  | 跳过飞书通知推送                                   |
 
 ## 辅种方法学
 
@@ -286,23 +300,56 @@ qB 现有 .torrent → 提取 announce URL → 解析域名 → 匹配站点
                  │  HTTP Client    │
                  │  aiohttp 连接池  │
                  │  并发查询各站点   │
-                 └────────┬────────┘
-                          │
-          ┌───────────────┼───────────────┐
-          │               │               │
-     ┌────┴────┐    ┌────┴────┐    ┌────┴────┐
-     │ Site A  │    │ Site B  │    │ Site C  │
-     │ /api/   │    │ /api/   │    │ /api/   │
-     │ pieces- │    │ pieces- │    │ pieces- │
-     │ hash    │    │ hash    │    │ hash    │
-     └─────────┘    └─────────┘    └─────────┘
+                 └───┬─────────┬───┘
+                     │         │
+         ┌───────────┘         └──────────────┐
+         │  pieces_hash 模式                  │  Jackett 模式
+         │                                    │
+    ┌────┴────┐    ┌────┴────┐          ┌────┴────────────┐
+    │ Site A  │    │ Site B  │          │   Jackett        │
+    │ /api/   │    │ /api/   │          │   跨站搜索        │
+    │ pieces- │    │ pieces- │          │   ├── title+year  │
+    │ hash    │    │ hash    │          │   ├── size ±0.01G │
+    └─────────┘    └─────────┘          │   └── pieces_hash │
+                                         └─────────────────┘
 ```
 
 三阶段流水线：
 
 1. **扫描阶段**：递归遍历 `torrent_dir`，解析 `.torrent` 文件提取 `pieces_hash`，增量更新缓存
-2. **查询阶段**：异步批量 POST `pieces_hash` 到各站点 `/api/pieces-hash` 接口
-3. **添加阶段**：匹配到的种子依次执行 ① 从站点下载 `.torrent` → ② 添加到下载器（分批 0.3s 防抖）→ ③ 自动启动已完成校验的种子
+2. **查询阶段**：Pieces-hash 模式批量 POST 到各站点 `/api/pieces-hash`；Jackett 模式通过 Torznab API 跨站搜索
+3. **添加阶段**：匹配到的种子依次执行 ① 从站点下载 `.torrent` → ② pieces_hash 校验 → ③ 添加到下载器（`skip_hash_check=false`, `paused=true`，由 qBittorrent 自行 recheck 确认文件匹配后做种）
+
+### 双模式辅种
+
+| 模式            | 原理                                                 | 适用场景            |
+| --------------- | ---------------------------------------------------- | ------------------- |
+| **pieces_hash** | 直接 POST pieces_hash 到站点 `/api/pieces-hash`      | 支持该 API 的 PT 站 |
+| **Jackett**     | 通过 Jackett Torznab API 搜索 title+year，按尺寸过滤 | 任意 Jackett 索引器 |
+
+Jackett 模式流程：
+
+```
+本地种子 → 提取 title+year 搜索词 → Jackett Torznab 搜索
+→ 尺寸过滤（±0.01GB for ≥1GB / ±0.01MB for ≥1MB）
+→ 下载候选种子 → pieces_hash 校验
+→ 不匹配的 URL 写入缓存（data/jackett_dl_cache.json），后续跳过
+→ 匹配则添加至 qBittorrent（paused，由 qB 自行 recheck）
+```
+
+### 站点 pieces-hash API 检测
+
+站点 API 端点是否支持 pieces_hash 可通过 HTTP 请求快速判断：
+
+```
+POST https://example.com/api/pieces-hash
+
+→ 404 Not Found      站点不支持 pieces_hash API，可尝试 Jackett 模式
+→ 405 Method Not Allowed  站点支持该 API，但需检查 passkey 或请求格式
+→ 200 OK                  API 正常，返回匹配的 torrent_id 列表
+```
+
+配置站点时若不确定 API 是否可用，先用 `curl -X POST` 试一下即可确认。虽然配置简单，但我们已在后端内置了两种模式：第一种是通过每个站点的专用 API 进行精确查询，直接通过企业级的并发管道匹配；第二种则是接入 Jackett 索引器，在全局维度进行智能搜索并返回符合条件的结果。这两种方式互不干扰，双轨并行，确保无论是在内部站点还是外部资源平台，都能高效准确地完成数据请求与匹配任务。
 
 ## 依赖
 
@@ -311,6 +358,12 @@ aiohttp>=3.8
 PyYAML>=6.0
 aiosqlite>=0.20.0
 ```
+
+> **可选依赖**：使用 Transmission 作为下载器时需额外安装：
+>
+> ```bash
+> pip install transmission-rpc
+> ```
 
 ## License
 

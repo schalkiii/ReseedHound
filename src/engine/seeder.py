@@ -9,6 +9,7 @@ from ..network.client import DeadTorrentCache, SiteClient
 from ..storage.cache import TorrentCache
 from ..storage.config import Config
 from .downloader import DownloaderBase, create_downloader
+from .jackett import JackettClient
 from .parser import TorrentParser
 
 logger = logging.getLogger("seedhound")
@@ -60,6 +61,7 @@ class ReseedEngine:
             site_interval = s.get("download_interval")
             if site_interval and s.get("url"):
                 from yarl import URL
+
                 host = URL(s["url"]).host
                 if host:
                     host_intervals[host] = float(site_interval)
@@ -79,9 +81,34 @@ class ReseedEngine:
         self._batch_size = config.global_config.get("batch_size", 100)
         self._stats = ReseedStats()
 
+        self._jackett: Optional[JackettClient] = None
+        self._use_jackett = config.jackett_enabled
+        mode = config.operation_mode
+        if self._use_jackett:
+            jc = config.jackett_config
+            self._jackett = JackettClient(
+                base_url=config.jackett_url,
+                api_key=config.jackett_api_key,
+                timeout=jc.get("timeout", 30),
+                concurrency=jc.get("concurrency", 5),
+                retry_count=jc.get(
+                    "retry_count", config.global_config.get("retry_count", 2)
+                ),
+                retry_delay=jc.get(
+                    "retry_delay", config.global_config.get("retry_delay", 2.0)
+                ),
+                search_interval=jc.get("search_interval", 1.0),
+            )
+        self._mode = mode if self._use_jackett else "pieces_hash"
+
     async def start(self):
         await self._cache.init()
         await self._client.start()
+        if self._jackett:
+            await self._jackett.start()
+            if not await self._jackett.test_connection():
+                logger.warning("Jackett 连接失败，将仅使用 pieces_hash 模式")
+                self._mode = "pieces_hash"
         dl_config = self._config.downloader_config
         self._downloader = create_downloader(dl_config)
         if not await self._downloader.connect():
@@ -90,12 +117,15 @@ class ReseedEngine:
     async def close(self):
         if self._downloader:
             await self._downloader.close()
+        if self._jackett:
+            await self._jackett.close()
         await self._client.close()
 
     async def run(self, dry_run: bool = False, site_name: str = None) -> ReseedStats:
         self._stats.start_time = time.time()
         logger.info("=" * 60)
         log_parts = ["SeedHound 辅种引擎启动"]
+        log_parts.append(f"[模式: {self._mode}]")
         if dry_run:
             log_parts.append("[演练模式] 只查询不添加")
         if site_name:
@@ -117,18 +147,30 @@ class ReseedEngine:
             missing = [n for n in site_names if n not in found]
             if missing:
                 logger.warning("以下站点未在配置中找到: %s", ", ".join(missing))
-        total_for_query = len(self._torrents)
-        logger.info(
-            "启用站点: %d 个, 待查询种子: %d 个 (其中新增 %d 个)",
-            len(sites), total_for_query, self._stats.new_torrents,
-        )
 
-        await self._phase_query_sites(sites)
+        use_pieces_hash = self._mode in ("pieces_hash", "both")
+        use_jackett = self._mode in ("jackett", "both")
 
-        if not dry_run:
-            await self._phase_add_torrents(sites)
-        else:
-            logger.info("[演练模式] 跳过阶段3（添加种子到下载器）")
+        if use_jackett and not dry_run:
+            await self._phase_jackett_search()
+
+        if use_pieces_hash:
+            total_for_query = len(self._torrents)
+            logger.info(
+                "启用站点: %d 个, 待查询种子: %d 个 (其中新增 %d 个)",
+                len(sites),
+                total_for_query,
+                self._stats.new_torrents,
+            )
+
+            await self._phase_query_sites(sites)
+
+            if not dry_run:
+                await self._phase_add_torrents(sites)
+            else:
+                logger.info("[演练模式] 跳过阶段3（添加种子到下载器）")
+        elif not dry_run:
+            logger.info("[Jackett模式] 跳过 pieces_hash 查询")
 
         self._stats.end_time = time.time()
         self._stats.dead_count = self._dead_cache.size()
@@ -172,24 +214,150 @@ class ReseedEngine:
 
         self._qb_pieces_hashes = {t["pieces_hash"] for t in unique_torrents}
         self._qb_announces = {
-            t["pieces_hash"]: t.get("announce", "")
-            for t in unique_torrents
+            t["pieces_hash"]: t.get("announce", "") for t in unique_torrents
         }
 
         logger.info(
             "扫描完成: 总计=%d, 新增=%d, 已缓存=%d, 去重=%d, 待查询=%d",
-            len(torrents), len(uncached), len(torrents) - len(uncached),
-            duplicate_count, len(unique_torrents),
+            len(torrents),
+            len(uncached),
+            len(torrents) - len(uncached),
+            duplicate_count,
+            len(unique_torrents),
         )
         self._torrents = unique_torrents
+
+    async def _phase_jackett_search(self):
+        logger.info("[Jackett] 通过 Jackett 搜索辅种...")
+        qb_info_hashes = await self._downloader.get_all_info_hashes()
+        logger.info("qB 中现有种子: %d 个", len(qb_info_hashes))
+
+        torrent_tag = self._config.downloader_config.get("tag", "SeedHound")
+
+        total = len(self._torrents)
+        searched = 0
+        matched_count = 0
+
+        with_name_and_size = sum(
+            1
+            for t in self._torrents
+            if t.get("file_name") and t.get("total_size", 0) > 0
+        )
+        without_size = sum(
+            1
+            for t in self._torrents
+            if t.get("file_name") and t.get("total_size", 0) == 0
+        )
+        logger.info(
+            "Jackett 待搜索: 有size=%d, 缺size=%d, 缺名称=%d, 总计=%d",
+            with_name_and_size,
+            without_size,
+            total - with_name_and_size - without_size,
+            total,
+        )
+
+        for idx, t in enumerate(self._torrents):
+            search_name = t.get("torrent_name") or t.get("file_name", "")
+            if search_name.endswith(".torrent"):
+                search_name = search_name[:-8]
+            torrent_size = t.get("total_size", 0)
+            if not search_name or not torrent_size:
+                continue
+
+            if (idx + 1) % 10 == 0 or (idx + 1) == 1:
+                jstats = self._jackett.stats
+                logger.info(
+                    "Jackett 进度 [%d/%d], 搜索=%d, 尺寸命中=%d, 下载=%d, 成功=%d",
+                    idx + 1,
+                    total,
+                    searched,
+                    matched_count,
+                    jstats.downloaded_count,
+                    self._stats.succeeded_count,
+                )
+            downloaded = []
+            try:
+                downloaded = await self._jackett.search_and_download(
+                    torrent_name=search_name,
+                    torrent_size=torrent_size,
+                    target_pieces_hash=t.get("pieces_hash", ""),
+                    target_info_hash=t.get("info_hash", ""),
+                    http_client=self._client,
+                )
+            except Exception as exc:
+                logger.debug("Jackett 搜索异常 [%s]: %s", search_name[:50], exc)
+            searched += 1
+
+            if len(downloaded) > 0:
+                matched_count += 1
+
+            for torrent_data, result in downloaded:
+                parsed = TorrentParser.parse_bytes(torrent_data, file_name=search_name)
+                if not parsed:
+                    self._stats.failed_count += 1
+                    continue
+
+                new_info_hash = parsed["info_hash"]
+                if new_info_hash in qb_info_hashes:
+                    continue
+
+                dl_info = await self._downloader.get_torrent_info(t["info_hash"])
+                if not dl_info:
+                    continue
+                if dl_info["state"] == "downloading":
+                    continue
+
+                success = await self._downloader.add_torrent(
+                    torrent_files=torrent_data,
+                    save_path=dl_info["save_path"],
+                    skip_hash_check=False,
+                    paused=True,
+                    tag=torrent_tag,
+                )
+                if success:
+                    self._stats.succeeded_count += 1
+                    indexer = result.indexer_name or "jackett"
+                    self._stats.site_succeeded[indexer] = (
+                        self._stats.site_succeeded.get(indexer, 0) + 1
+                    )
+                    self._stats.site_details[indexer] = (
+                        self._stats.site_details.get(indexer, 0) + 1
+                    )
+                    self._stats.matched_count += 1
+                    if new_info_hash:
+                        qb_info_hashes.add(new_info_hash)
+                    logger.info(
+                        "Jackett 辅种成功: %s -> %s",
+                        search_name[:60],
+                        indexer,
+                    )
+                else:
+                    self._stats.failed_count += 1
+
+            if (idx + 1) % 50 == 0 or (idx + 1) == total:
+                logger.info(
+                    "Jackett 进度: %d/%d, 搜索=%d, 命中=%d, 辅种成功=%d",
+                    idx + 1,
+                    total,
+                    searched,
+                    matched_count,
+                    self._stats.succeeded_count,
+                )
+
+        jstats = self._jackett.stats
+        logger.info(
+            "Jackett 搜索完成: 查询=%d, 匹配=%d, 下载=%d, 失败=%d",
+            jstats.searched_count or searched,
+            jstats.matched_count,
+            jstats.downloaded_count,
+            jstats.failed_count,
+        )
 
     async def _phase_query_sites(self, sites: list[dict]):
         logger.info("[阶段2] 并发查询各站点...")
         pieces_hashes = [t["pieces_hash"] for t in self._torrents]
 
-        site_sem = asyncio.Semaphore(
-            self._config.global_config.get("concurrency", 20)
-        )
+        site_sem = asyncio.Semaphore(self._config.global_config.get("concurrency", 20))
 
         async def query_one_site(site: dict):
             async with site_sem:
@@ -197,7 +365,7 @@ class ReseedEngine:
                 logger.info("查询站点: %s", site_name)
 
                 batches = [
-                    pieces_hashes[i:i + self._batch_size]
+                    pieces_hashes[i : i + self._batch_size]
                     for i in range(0, len(pieces_hashes), self._batch_size)
                 ]
 
@@ -249,11 +417,20 @@ class ReseedEngine:
         site_serious_errors: dict[str, int] = {}
         MAX_SERIOUS_ERRORS = 3
 
-        SERIOUS_ERRORS = frozenset({
-            "http_401", "http_403", "http_404", "http_410",
-            "html_permission_denied", "html_torrent_deleted", "html_not_found",
-            "html_forbidden", "html_auth_required", "auth_redirect",
-        })
+        SERIOUS_ERRORS = frozenset(
+            {
+                "http_401",
+                "http_403",
+                "http_404",
+                "http_410",
+                "html_permission_denied",
+                "html_torrent_deleted",
+                "html_not_found",
+                "html_forbidden",
+                "html_auth_required",
+                "auth_redirect",
+            }
+        )
 
         site_configs = {s["name"]: s for s in sites}
 
@@ -275,7 +452,8 @@ class ReseedEngine:
         if qb_seeding_count:
             logger.info(
                 "qB 中已有辅种记录（基于 tracker 解析）: %d 条 (涉及 %d 个唯一种子)",
-                qb_seeding_count, len(qb_site_seeding),
+                qb_seeding_count,
+                len(qb_site_seeding),
             )
 
         combos_to_check = []
@@ -285,14 +463,16 @@ class ReseedEngine:
         reseeded_set = await self._cache.get_reseeded_combos(combos_to_check)
 
         valid_reseeded = {
-            (ph, sn, tid) for (ph, sn, tid) in reseeded_set
+            (ph, sn, tid)
+            for (ph, sn, tid) in reseeded_set
             if ph in self._qb_pieces_hashes
         }
         stale_count = len(reseeded_set) - len(valid_reseeded)
         if valid_reseeded:
             logger.info(
                 "已有辅种记录: %d 条有效 (qB中仍存在), %d 条已过期 (qB中已删除, 将重新添加)",
-                len(valid_reseeded), stale_count,
+                len(valid_reseeded),
+                stale_count,
             )
         if stale_count:
             logger.info("%d 条记录对应的种子已不在qB中（将重新尝试添加）", stale_count)
@@ -335,18 +515,24 @@ class ReseedEngine:
                     )
 
                     torrent_data, error_reason = await self._client.try_download(
-                        dl_url, site_name=site_name, torrent_id=torrent_id,
+                        dl_url,
+                        site_name=site_name,
+                        torrent_id=torrent_id,
                     )
                     if not torrent_data:
                         self._stats.failed_count += 1
                         if error_reason in SERIOUS_ERRORS:
-                            site_serious_errors[site_name] = site_serious_errors.get(site_name, 0) + 1
+                            site_serious_errors[site_name] = (
+                                site_serious_errors.get(site_name, 0) + 1
+                            )
                             if site_serious_errors[site_name] >= MAX_SERIOUS_ERRORS:
                                 if site_name not in no_access_sites:
                                     no_access_sites.add(site_name)
                                     logger.warning(
                                         "站点 %s (%d次严重错误: %s)，跳过后续下载",
-                                        site_name, site_serious_errors[site_name], error_reason,
+                                        site_name,
+                                        site_serious_errors[site_name],
+                                        error_reason,
                                     )
                         continue
 
@@ -356,10 +542,17 @@ class ReseedEngine:
                     )
                     if not parsed:
                         self._stats.failed_count += 1
-                        head_hex = torrent_data[:20].hex() if len(torrent_data) >= 20 else torrent_data.hex()
+                        head_hex = (
+                            torrent_data[:20].hex()
+                            if len(torrent_data) >= 20
+                            else torrent_data.hex()
+                        )
                         logger.warning(
                             "下载的不是有效torrent文件: %s (站点: %s, 大小: %d, 前20字节: %s)",
-                            entry.get("file_name", "?"), site_name, len(torrent_data), head_hex,
+                            entry.get("file_name", "?"),
+                            site_name,
+                            len(torrent_data),
+                            head_hex,
                         )
                         continue
                     new_info_hash = parsed["info_hash"]
@@ -379,28 +572,30 @@ class ReseedEngine:
                             self._stats.site_succeeded.get(site_name, 0) + 1
                         )
                         await self._cache.add_reseed_record(
-                            pieces_hash, site_name, torrent_id,
+                            pieces_hash,
+                            site_name,
+                            torrent_id,
                         )
                         logger.info(
                             "辅种成功: %s -> %s (id=%d)",
-                            entry["file_name"], site_name, torrent_id,
+                            entry["file_name"],
+                            site_name,
+                            torrent_id,
                         )
 
                         if new_info_hash:
                             qb_info_hashes.add(new_info_hash)
                             await asyncio.sleep(0.3)
-                            ti = await self._downloader.get_torrent_info(
-                                new_info_hash
-                            )
+                            ti = await self._downloader.get_torrent_info(new_info_hash)
                             if ti and ti.get("state") in (
-                                "pausedUP", "completed",
+                                "pausedUP",
+                                "completed",
                             ):
-                                await self._downloader.resume_torrent(
-                                    new_info_hash
-                                )
+                                await self._downloader.resume_torrent(new_info_hash)
                                 logger.info(
                                     "自动开始: %s (%s, 已完成)",
-                                    entry["file_name"], site_name,
+                                    entry["file_name"],
+                                    site_name,
                                 )
                     else:
                         self._stats.failed_count += 1
@@ -409,10 +604,7 @@ class ReseedEngine:
                         )
                     await asyncio.sleep(0.3)
 
-        tasks = [
-            add_one(ph, matches)
-            for ph, matches in self._match_map.items()
-        ]
+        tasks = [add_one(ph, matches) for ph, matches in self._match_map.items()]
         await asyncio.gather(*tasks, return_exceptions=True)
 
         if self._stats.tracker_skip_count:
