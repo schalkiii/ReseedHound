@@ -516,7 +516,7 @@ class ReseedEngine:
                     "skip_hash_check", True
                 )
                 auto_start = self._config.destination_downloader_config.get(
-                    "auto_start", False
+                    "auto_start", True
                 )
                 torrent_tag = self._config.destination_downloader_config.get(
                     "tag", "SeedHound"

@@ -140,6 +140,34 @@ seedhound/
 pip install -r requirements.txt
 ```
 
+### Docker 部署
+
+```bash
+# 构建镜像
+docker build -t seedhound .
+
+# 运行容器
+docker run -d \
+  --name seedhound \
+  --restart unless-stopped \
+  -v $(pwd)/config.yaml:/app/config.yaml \
+  -v $(pwd)/sites.yaml:/app/sites.yaml \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  -v /path/to/BT_backup:/app/torrents \
+  seedhound
+```
+
+| 挂载项        | 说明                                                        |
+| ------------- | ----------------------------------------------------------- |
+| `config.yaml` | 主配置文件，必须挂载                                        |
+| `sites.yaml`  | 站点配置文件，API 模式必须挂载                              |
+| `data/`       | SQLite 缓存 + Jackett 下载缓存，持久化                      |
+| `logs/`       | 运行日志，方便排查问题                                      |
+| `torrents/`   | 种子文件目录（对应 `downloader.torrent_dir`），只读挂载即可 |
+
+**注意**：Docker 容器内需要访问宿主机的下载器（qBittorrent/Transmission），请确保 `config.yaml` 中 `downloader.host` 使用宿主机可访问的 IP（如 `host.docker.internal` 或宿主机真实 IP），不要使用 `127.0.0.1`。
+
 ### 配置
 
 复制示例文件为实际配置文件：
