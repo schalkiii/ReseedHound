@@ -18,6 +18,8 @@ log:
   level: INFO
   file: logs/reseed.log
 
+# === 下载器配置 ===
+# 单下载器模式（默认）：
 downloader:
   type: qbittorrent
   host: 127.0.0.1
@@ -28,6 +30,23 @@ downloader:
   skip_hash_check: true
   auto_start: true
   tag: SeedHound
+
+# 双下载器模式（跨下载器辅种）：
+# downloader:
+#   source:
+#     type: qbittorrent
+#     host: 192.168.1.100
+#     port: 8080
+#     username: admin
+#     password: your_password_here
+#     torrent_dir: /path/to/source/BT_backup
+#   destination:
+#     type: transmission
+#     host: 127.0.0.1
+#     port: 9091
+#     username: admin
+#     password: your_password_here
+#     tag: SeedHound
 
 notify:
   feishu:

@@ -5,7 +5,9 @@ import yaml
 
 
 class Config:
-    def __init__(self, config_path: str = "config.yaml", sites_path: str = "sites.yaml"):
+    def __init__(
+        self, config_path: str = "config.yaml", sites_path: str = "sites.yaml"
+    ):
         self._config = self._load_yaml(config_path)
         self._sites = self._load_yaml(sites_path)
 
@@ -32,6 +34,25 @@ class Config:
     @property
     def downloader_config(self) -> dict:
         return self._config.get("downloader", {})
+
+    @property
+    def source_downloader_config(self) -> dict:
+        dl = self.downloader_config
+        if "source" in dl:
+            return dl["source"]
+        return dl
+
+    @property
+    def destination_downloader_config(self) -> dict:
+        dl = self.downloader_config
+        if "destination" in dl:
+            return dl["destination"]
+        return dl
+
+    @property
+    def is_dual_downloader(self) -> bool:
+        dl = self.downloader_config
+        return "source" in dl and "destination" in dl
 
     @property
     def feishu_config(self) -> dict:
@@ -61,7 +82,8 @@ class Config:
     @property
     def sites(self) -> list[dict]:
         return [
-            s for s in self._sites.get("sites", [])
+            s
+            for s in self._sites.get("sites", [])
             if s.get("enabled", True) and s.get("passkey")
         ]
 

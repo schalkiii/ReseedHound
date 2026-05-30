@@ -179,6 +179,23 @@ downloader:
   auto_start: true # 自动开始做种
   tag: SeedHound # 为添加的种子打标签
 
+# 双下载器模式（跨下载器辅种，源→目标）：
+# downloader:
+#   source:
+#     type: qbittorrent
+#     host: 192.168.1.100
+#     port: 8080
+#     username: admin
+#     password: your_password
+#     torrent_dir: /path/to/source/BT_backup
+#   destination:
+#     type: transmission
+#     host: 127.0.0.1
+#     port: 9091
+#     username: admin
+#     password: your_password
+#     tag: SeedHound
+
 notify:
   feishu:
     webhook_url: "" # 飞书机器人 Webhook 地址

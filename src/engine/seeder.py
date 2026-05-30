@@ -78,6 +78,7 @@ class ReseedEngine:
             site_cookies=site_cookies,
         )
         self._downloader: Optional[DownloaderBase] = None
+        self._src_downloader: Optional[DownloaderBase] = None
         self._batch_size = config.global_config.get("batch_size", 100)
         self._stats = ReseedStats()
 
@@ -114,9 +115,25 @@ class ReseedEngine:
         if not await self._downloader.connect():
             raise RuntimeError("下载器连接失败")
 
+        if self._config.is_dual_downloader:
+            src_cfg = self._config.source_downloader_config
+            self._src_downloader = create_downloader(src_cfg)
+            if not await self._src_downloader.connect():
+                logger.warning("源下载器连接失败，将使用本地文件路径扫描")
+            else:
+                logger.info(
+                    "双下载器模式: 源=%s:%s → 目标=%s:%s",
+                    src_cfg.get("host", "?"),
+                    src_cfg.get("port", "?"),
+                    dl_config.get("host", "?"),
+                    dl_config.get("port", "?"),
+                )
+
     async def close(self):
         if self._downloader:
             await self._downloader.close()
+        if self._src_downloader:
+            await self._src_downloader.close()
         if self._jackett:
             await self._jackett.close()
         await self._client.close()
@@ -126,6 +143,8 @@ class ReseedEngine:
         logger.info("=" * 60)
         log_parts = ["SeedHound 辅种引擎启动"]
         log_parts.append(f"[模式: {self._mode}]")
+        if self._config.is_dual_downloader:
+            log_parts.append("[双下载器]")
         if dry_run:
             log_parts.append("[演练模式] 只查询不添加")
         if site_name:
@@ -193,7 +212,7 @@ class ReseedEngine:
 
     async def _phase_scan(self):
         logger.info("[阶段1] 扫描本地种子文件...")
-        torrent_dir = self._config.downloader_config.get("torrent_dir", "")
+        torrent_dir = self._config.source_downloader_config.get("torrent_dir", "")
         torrents = await TorrentParser.scan_directory(torrent_dir)
         self._stats.total_torrents = len(torrents)
 
@@ -232,7 +251,7 @@ class ReseedEngine:
         qb_info_hashes = await self._downloader.get_all_info_hashes()
         logger.info("qB 中现有种子: %d 个", len(qb_info_hashes))
 
-        torrent_tag = self._config.downloader_config.get("tag", "SeedHound")
+        torrent_tag = self._config.destination_downloader_config.get("tag", "SeedHound")
 
         total = len(self._torrents)
         searched = 0
@@ -493,9 +512,15 @@ class ReseedEngine:
                 if dl_info["state"] == "downloading":
                     return
 
-                skip_hash = self._config.downloader_config.get("skip_hash_check", True)
-                auto_start = self._config.downloader_config.get("auto_start", False)
-                torrent_tag = self._config.downloader_config.get("tag", "SeedHound")
+                skip_hash = self._config.destination_downloader_config.get(
+                    "skip_hash_check", True
+                )
+                auto_start = self._config.destination_downloader_config.get(
+                    "auto_start", False
+                )
+                torrent_tag = self._config.destination_downloader_config.get(
+                    "tag", "SeedHound"
+                )
 
                 for site_name, torrent_id, site_url in matches:
                     if site_name in no_access_sites:
