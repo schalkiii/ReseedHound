@@ -314,7 +314,29 @@ class SiteClient:
     ) -> tuple[Optional[bytes], str]:
         if site_name and torrent_id and self._dead_cache.is_dead(site_name, torrent_id):
             return None, "dead_cached"
-        return await self.get_bytes(url, site_name=site_name, torrent_id=torrent_id)
+
+        for attempt in range(self._retry_count + 1):
+            data, reason = await self.get_bytes(
+                url, site_name=site_name, torrent_id=torrent_id
+            )
+            if data:
+                if attempt > 0:
+                    logger.info(
+                        "下载成功 %s (第 %d 次重试后恢复)", url, attempt
+                    )
+                return data, ""
+
+            if reason == "timeout" and attempt < self._retry_count:
+                delay = self._retry_delay * (attempt + 1)
+                logger.debug(
+                    "下载超时 %s，等待 %.1f 秒后重试 (%d/%d)",
+                    url, delay, attempt + 1, self._retry_count
+                )
+                await asyncio.sleep(delay)
+            else:
+                return None, reason
+
+        return None, "timeout"
 
     async def post_json(self, url: str, data: dict, retries: int = 1) -> Optional[dict]:
         last_error = ""

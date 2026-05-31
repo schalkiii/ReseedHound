@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-05-31 — 下载重试机制修复 + Cookie Cloud 同步
+
+### 修复
+- **下载重试机制**：`try_download` 方法原先直接调用 `get_bytes` 无重试，导致超时种子直接失败。现改为根据 `retry_count`/`retry_delay` 配置进行指数退避重试，大幅提升下载成功率
+- **Cookie 格式修正**：`sites.yaml` 中 cookie 字段改为单行双引号包裹，避免 YAML 多行解析问题
+- **日志乱码修复**：同步 Cookie 日志中的 `✓`/`✗` 符号替换为 `[OK]`/`[--]` 文本标识
+
+### 新增
+- **Cookie Cloud 同步**：`run.py sync-cookies` 命令，从自部署的 Cookie Cloud 服务端自动拉取加密 Cookie 数据，按域名匹配后写入 `sites.yaml`
+  - 支持 AES-256-CBC 解密（EVP_BytesToKey 密钥派生）
+  - 新增依赖 `pycryptodome>=3.20.0`
+
+### 配置
+- `api_timeout` 从 10 秒增至 15 秒（config.example.yaml），适应慢响应站点
+
 ## 2026-05-30 — 跨下载器辅种 + Jackett 策略重构
 
 ### 新增
