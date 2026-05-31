@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlparse
@@ -376,16 +377,62 @@ class ReseedEngine:
         logger.info("[阶段2] 并发查询各站点...")
         pieces_hashes = [t["pieces_hash"] for t in self._torrents]
 
+        domain_to_site = {}
+        for s in sites:
+            domain = urlparse(s["url"]).netloc
+            if domain:
+                domain_to_site[domain] = s["name"]
+
+        site_seeding_by_tracker: dict[str, set[str]] = defaultdict(set)
+        for ph, announce_url in self._qb_announces.items():
+            if announce_url:
+                domain = urlparse(announce_url).netloc
+                site_name = domain_to_site.get(domain)
+                if site_name:
+                    site_seeding_by_tracker[site_name].add(ph)
+
+        reseed_by_site = await self._cache.get_reseeded_hashes_by_site(pieces_hashes)
+
+        site_exclude: dict[str, set[str]] = defaultdict(set)
+        for site_name, hashes in site_seeding_by_tracker.items():
+            site_exclude[site_name] |= hashes
+        for site_name, hashes in reseed_by_site.items():
+            site_exclude[site_name] |= hashes
+
+        total_skipped = 0
+        for site_name, exclude_set in site_exclude.items():
+            skipped = len(exclude_set)
+            if skipped > 0:
+                total_skipped += skipped
+                logger.info(
+                    "站点 %s 跳过 %d 个已知种子（已辅种/同站）",
+                    site_name,
+                    skipped,
+                )
+        if total_skipped:
+            logger.info(
+                "总计跳过 %d 个已知种子查询（%d 个站点），减少 %d 次 API 请求",
+                total_skipped,
+                len(site_exclude),
+                total_skipped,
+            )
+
+        self._domain_to_site = domain_to_site
+        self._qb_site_seeding = site_seeding_by_tracker
+
         site_sem = asyncio.Semaphore(self._config.global_config.get("concurrency", 20))
 
         async def query_one_site(site: dict):
             async with site_sem:
                 site_name = site["name"]
-                logger.info("查询站点: %s", site_name)
+                exclude = site_exclude.get(site_name, set())
+                site_hashes = [ph for ph in pieces_hashes if ph not in exclude]
+
+                logger.info("查询站点: %s (%d 个种子)", site_name, len(site_hashes))
 
                 batches = [
-                    pieces_hashes[i : i + self._batch_size]
-                    for i in range(0, len(pieces_hashes), self._batch_size)
+                    site_hashes[i : i + self._batch_size]
+                    for i in range(0, len(site_hashes), self._batch_size)
                 ]
 
                 results = await self._client.query_site_batched(site, batches)
@@ -453,20 +500,7 @@ class ReseedEngine:
 
         site_configs = {s["name"]: s for s in sites}
 
-        domain_to_site = {}
-        for s in sites:
-            domain = urlparse(s["url"]).netloc
-            if domain:
-                domain_to_site[domain] = s["name"]
-
-        qb_site_seeding = {}
-        for ph, announce_url in self._qb_announces.items():
-            if announce_url:
-                domain = urlparse(announce_url).netloc
-                site_name = domain_to_site.get(domain)
-                if site_name:
-                    qb_site_seeding.setdefault(ph, set()).add(site_name)
-
+        qb_site_seeding = getattr(self, "_qb_site_seeding", {})
         qb_seeding_count = sum(len(v) for v in qb_site_seeding.values())
         if qb_seeding_count:
             logger.info(

@@ -105,6 +105,26 @@ class TorrentCache:
                 )
                 await db.commit()
 
+    async def get_reseeded_hashes_by_site(
+        self, pieces_hashes: list[str],
+    ) -> dict[str, set[str]]:
+        result: dict[str, set[str]] = {}
+        if not pieces_hashes:
+            return result
+        async with aiosqlite.connect(str(self._db_path)) as db:
+            for i in range(0, len(pieces_hashes), 500):
+                batch = pieces_hashes[i:i + 500]
+                placeholders = ",".join("?" for _ in batch)
+                cursor = await db.execute(
+                    f"SELECT DISTINCT pieces_hash, site_name FROM reseed_history "
+                    f"WHERE pieces_hash IN ({placeholders})",
+                    batch,
+                )
+                rows = await cursor.fetchall()
+                for ph, sn in rows:
+                    result.setdefault(sn, set()).add(ph)
+        return result
+
     async def get_stats(self) -> dict:
         async with aiosqlite.connect(str(self._db_path)) as db:
             cursor = await db.execute("SELECT COUNT(*) FROM pieces_cache")
