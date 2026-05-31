@@ -431,7 +431,7 @@ class ReseedEngine:
             logger.info("没有可辅种的种子")
             return
 
-        add_sem = asyncio.Semaphore(10)
+        add_sem = asyncio.Semaphore(20)
         no_access_sites: set[str] = set()
         site_serious_errors: dict[str, int] = {}
         MAX_SERIOUS_ERRORS = 3
