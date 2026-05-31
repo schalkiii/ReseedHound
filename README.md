@@ -275,6 +275,51 @@ python run.py --no-feishu
 | `--dry-run`    | 演练模式，只查询匹配不添加种子                     |
 | `--site S1,S2` | 仅对指定站点辅种（逗号分隔）                       |
 | `--no-feishu`  | 跳过飞书通知推送                                   |
+| `sync-cookies` | 从 Cookie Cloud 同步 Cookie 到 sites.yaml          |
+
+### Cookie 同步
+
+SeedHound 支持从 [Cookie Cloud](https://github.com/easychen/CookieCloud) 自动同步各站点的 Cookie 信息，无需手动从浏览器导出。
+
+Cookie Cloud 是一个浏览器插件，可将浏览器中的 Cookie 加密同步至自托管服务端。SeedHound 通过读取服务端数据，自动匹配 `sites.yaml` 中各站点的域名，将对应 Cookie 写入配置。
+
+**前置条件**：
+
+1. 在浏览器中安装 Cookie Cloud 插件，连接至你的 Cookie Cloud 服务端
+2. 确保 Cookie Cloud 服务端可访问，且 `config.yaml` 中已配置连接参数
+
+**配置**（在 `config.yaml` 中添加）：
+
+```yaml
+cookiecloud:
+  enable: true
+  url: "http://127.0.0.1:8082/cookie" # Cookie Cloud 服务端地址
+  uuid: "your-uuid" # 用户 UUID
+  password: "your-password" # 解密密码
+```
+
+**使用**：
+
+```bash
+# 同步 Cookie 到 sites.yaml
+python run.py sync-cookies
+```
+
+执行后 SeedHound 会：
+
+1. 从 Cookie Cloud 服务端拉取加密的 Cookie 数据并解密
+2. 提取各域名下的 Cookie，与 `sites.yaml` 中的站点 URL 域名进行匹配
+3. 将匹配的 Cookie 以双引号包裹的单行格式写入 `sites.yaml`
+4. 输出匹配结果统计（成功匹配数 / 总站点数）
+
+**Cookie 日志解读**：
+
+```
+[OK] 站点名 <- 匹配域名 (N 条 Cookie)    ← 匹配成功
+[--] 站点名 未匹配到 Cookie               ← 该站点在 Cookie Cloud 中无数据
+```
+
+> **注意**：`sites.yaml` 中的 cookie 值以双引号包裹且位于单行，避免 YAML 解析歧义。同步完成后建议提交 `sites.yaml` 以备份最新的站点认证信息。
 
 ## 辅种方法学
 
