@@ -583,6 +583,11 @@ class ReseedEngine:
                     new_info_hash = parsed["info_hash"]
 
                     if new_info_hash in qb_info_hashes:
+                        await self._cache.add_reseed_record(
+                            pieces_hash,
+                            site_name,
+                            torrent_id,
+                        )
                         continue
                     success = await self._downloader.add_torrent(
                         torrent_files=torrent_data,
