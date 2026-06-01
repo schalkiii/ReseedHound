@@ -84,7 +84,7 @@ class Config:
         return [
             s
             for s in self._sites.get("sites", [])
-            if s.get("enabled", True) and s.get("passkey")
+            if s.get("enable", s.get("enabled", True)) and s.get("passkey")
         ]
 
     def get(self, key: str, default: Any = None) -> Any:

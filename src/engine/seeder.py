@@ -383,27 +383,31 @@ class ReseedEngine:
             if domain:
                 domain_to_site[domain] = s["name"]
 
-        site_seeding_by_tracker: dict[str, set[str]] = defaultdict(set)
+        site_exclude: dict[str, set[str]] = defaultdict(set)
+        tracker_total = 0
+
         for ph, announce_url in self._qb_announces.items():
             if announce_url:
                 domain = urlparse(announce_url).netloc
                 site_name = domain_to_site.get(domain)
                 if site_name:
-                    site_seeding_by_tracker[site_name].add(ph)
+                    site_exclude[site_name].add(ph)
+                    tracker_total += 1
+
+        self._stats.tracker_skip_count = tracker_total
 
         reseed_by_site = await self._cache.get_reseeded_hashes_by_site(pieces_hashes)
-
-        site_exclude: dict[str, set[str]] = defaultdict(set)
-        for site_name, hashes in site_seeding_by_tracker.items():
-            site_exclude[site_name] |= hashes
+        reseed_total = 0
         for site_name, hashes in reseed_by_site.items():
-            site_exclude[site_name] |= hashes
+            valid = {ph for ph in hashes if ph in self._qb_pieces_hashes}
+            if valid:
+                site_exclude[site_name] |= valid
+                reseed_total += len(valid)
 
-        total_skipped = 0
+        total_skipped = tracker_total + reseed_total
         for site_name, exclude_set in site_exclude.items():
             skipped = len(exclude_set)
             if skipped > 0:
-                total_skipped += skipped
                 logger.info(
                     "站点 %s 跳过 %d 个已知种子（已辅种/同站）",
                     site_name,
@@ -411,14 +415,13 @@ class ReseedEngine:
                 )
         if total_skipped:
             logger.info(
-                "总计跳过 %d 个已知种子查询（%d 个站点），减少 %d 次 API 请求",
+                "总计跳过 %d 个已知种子: %d tracker + %d 历史缓存 (%d 个站点)，减少 %d 次 API 请求",
                 total_skipped,
+                tracker_total,
+                reseed_total,
                 len(site_exclude),
                 total_skipped,
             )
-
-        self._domain_to_site = domain_to_site
-        self._qb_site_seeding = site_seeding_by_tracker
 
         site_sem = asyncio.Semaphore(self._config.global_config.get("concurrency", 20))
 
@@ -500,36 +503,6 @@ class ReseedEngine:
 
         site_configs = {s["name"]: s for s in sites}
 
-        qb_site_seeding = getattr(self, "_qb_site_seeding", {})
-        qb_seeding_count = sum(len(v) for v in qb_site_seeding.values())
-        if qb_seeding_count:
-            logger.info(
-                "qB 中已有辅种记录（基于 tracker 解析）: %d 条 (涉及 %d 个唯一种子)",
-                qb_seeding_count,
-                len(qb_site_seeding),
-            )
-
-        combos_to_check = []
-        for pieces_hash, matches in self._match_map.items():
-            for site_name, torrent_id, _site_url in matches:
-                combos_to_check.append((pieces_hash, site_name, torrent_id))
-        reseeded_set = await self._cache.get_reseeded_combos(combos_to_check)
-
-        valid_reseeded = {
-            (ph, sn, tid)
-            for (ph, sn, tid) in reseeded_set
-            if ph in self._qb_pieces_hashes
-        }
-        stale_count = len(reseeded_set) - len(valid_reseeded)
-        if valid_reseeded:
-            logger.info(
-                "已有辅种记录: %d 条有效 (qB中仍存在), %d 条已过期 (qB中已删除, 将重新添加)",
-                len(valid_reseeded),
-                stale_count,
-            )
-        if stale_count:
-            logger.info("%d 条记录对应的种子已不在qB中（将重新尝试添加）", stale_count)
-
         qb_info_hashes = await self._downloader.get_all_info_hashes()
         logger.info("qB 中现有种子: %d 个", len(qb_info_hashes))
 
@@ -558,11 +531,6 @@ class ReseedEngine:
 
                 for site_name, torrent_id, site_url in matches:
                     if site_name in no_access_sites:
-                        continue
-                    if (pieces_hash, site_name, torrent_id) in valid_reseeded:
-                        continue
-                    if site_name in qb_site_seeding.get(pieces_hash, set()):
-                        self._stats.tracker_skip_count += 1
                         continue
 
                     site_cfg = site_configs.get(site_name)
@@ -673,6 +641,6 @@ class ReseedEngine:
 
         if self._stats.tracker_skip_count:
             logger.info(
-                "基于 tracker 跳过 (qB中已在同站辅种): %d 条",
+                "基于 tracker 在查询阶段跳过 (同站已知种子): %d 条",
                 self._stats.tracker_skip_count,
             )

@@ -4,14 +4,18 @@
 # passkey 获取方式：
 #   登录 PT 站点 → 控制面板 → 密钥/Passkey
 #   或从站点发布的种子下载链接中提取
+#
+# enable: true/false  是否启用该站点（默认 true），设为 false 可临时跳过
 
 sites:
   - name: example_site
     url: https://example.com
     api_url: https://example.com/api/pieces-hash
     passkey: your_passkey_here
+    enable: true
 
   - name: another_site
     url: https://another-pt.site
     api_url: https://another-pt.site/api/pieces-hash
     passkey: your_passkey_here
+    enable: true
