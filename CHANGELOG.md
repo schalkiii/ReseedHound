@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-07-07 — 原生定时运行
+
+### 新增
+
+- **原生定时调度器**：内置 `src/scheduler.py`，无需外部 cron 即可循环运行辅种引擎；每轮重新创建引擎保证状态干净，支持 `SIGINT`/`SIGTERM` 优雅退出（Windows 下自动回退到 `signal` 模块）
+- **`schedule` 子命令**：`python run.py schedule` 按 `config.yaml` 中 `scheduler` 配置循环运行
+- **配置自动切换**：`scheduler.enabled=true` 时，默认 `reseed` 运行自动切换为定时模式（契合"配置驱动"原则，无需命令行注入）
+- **Docker 入口逻辑并入 `run.py`**：移除独立的 `docker-entrypoint.sh`；`run.py` 在无子命令时直接读取 `SEEDHOUND_MODE` 环境变量（`reseed`/`schedule`/`sync-cookies`，默认 `reseed`）决定运行模式，同时修复了 `scheduler.enabled=true` 会错误劫持 `sync-cookies` 的隐患
+- **GHCR 发布工作流**：新增 `.github/workflows/docker.yml`，在打 `v*` 标签 / 发布 Release 时通过 GitHub Actions 自动构建并推送镜像到 GHCR（`ghcr.io/<owner>/<repo>`），使用仓库自带 `GITHUB_TOKEN` 鉴权
+
+### 配置
+
+- `config.example.yaml` 新增 `scheduler` 配置块：`enabled`、`interval_minutes`(默认 360)、`startup_delay`(默认 0)、`run_on_start`(默认 true)
+
+### 文档
+
+- README 新增"定时运行（原生调度器）"章节与三种触发方式
+- README Docker 部署新增 `SEEDHOUND_MODE` 说明表与常驻定时运行示例
+- README Docker 部署新增"从 GHCR 拉取镜像（推荐）"小节：镜像地址 `ghcr.io/reseed-puppy/seedhound`、标签说明（latest/v1.2.3/1.2）、docker 与 wslc 的 pull/run 示例、GitHub Actions 自动发布说明
+- README Docker 部署新增"使用 wslc 部署（微软原生 WSL 容器）"小节：`wslc.exe` 是微软 Build 2026 随 WSL 预览版内置的容器 CLI（语法同 docker、`container.exe` 别名），含安装、构建、运行（`-e SEEDHOUND_MODE=schedule`）、运维命令对照表，以及宿主机下载器用 `host.wsl.localhost` 而非 `127.0.0.1` 的提示
+- README 目录结构补充 `src/scheduler.py`
+
 ## 2026-06-01 — 过滤精简 + enable 字段修复
 
 ### 修复

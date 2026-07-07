@@ -18,6 +18,17 @@ log:
   level: INFO
   file: logs/reseed.log
 
+# === 定时运行配置（原生调度器）===
+# enabled: true 时，即使执行默认 `reseed` 也会自动切换为定时循环运行
+# interval_minutes: 每轮辅种之间的间隔（分钟）
+# startup_delay: 启动后延迟多少秒再执行首轮（便于错峰，默认 0）
+# run_on_start: 启动后是否立即执行首轮（false 则先等待一个完整间隔）
+scheduler:
+  enabled: false
+  interval_minutes: 360
+  startup_delay: 0
+  run_on_start: true
+
 # === 下载器配置 ===
 # 单下载器模式（默认）：
 downloader:

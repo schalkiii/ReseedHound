@@ -80,6 +80,27 @@ class Config:
         return self._config.get("global", {}).get("mode", "pieces_hash")
 
     @property
+    def scheduler_config(self) -> dict:
+        return self._config.get("scheduler", {}) or {}
+
+    @property
+    def scheduler_enabled(self) -> bool:
+        return bool(self.scheduler_config.get("enabled", False))
+
+    @property
+    def scheduler_interval_seconds(self) -> float:
+        minutes = float(self.scheduler_config.get("interval_minutes", 360))
+        return max(1.0, minutes * 60)
+
+    @property
+    def scheduler_startup_delay(self) -> float:
+        return max(0.0, float(self.scheduler_config.get("startup_delay", 0)))
+
+    @property
+    def scheduler_run_on_start(self) -> bool:
+        return bool(self.scheduler_config.get("run_on_start", True))
+
+    @property
     def sites(self) -> list[dict]:
         return [
             s

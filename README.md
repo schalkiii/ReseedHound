@@ -113,6 +113,7 @@ seedhound/
 │   │   ├── seeder.py         # 辅种引擎主控（三阶段流水线）
 │   │   ├── parser.py         # 种子解析器（纯 Python Bencode + 线程池）
 │   │   └── downloader.py     # 下载器接口（qBittorrent / Transmission）
+│   ├── scheduler.py          # 原生定时调度器（循环运行 + 优雅退出）
 │   ├── network/
 │   │   └── client.py         # 异步 HTTP 客户端（连接池 + DNS 缓存）
 │   ├── notify/
@@ -143,10 +144,15 @@ pip install -r requirements.txt
 ### Docker 部署
 
 ```bash
-# 构建镜像
+# 方式一：从 GHCR 拉取镜像（推荐，无需本地构建）
+docker pull ghcr.io/schalkiii/reseedhound:latest
+# 方式二：本地构建
 docker build -t seedhound .
+```
 
-# 运行容器
+> 镜像由 GitHub Actions 在打 `v*` 标签 / 发布 Release 时自动构建并推送到 **GHCR**（见仓库 `.github/workflows/docker.yml`）。镜像地址为 `ghcr.io/<owner>/<repo>`，本项目默认 `ghcr.io/schalkiii/reseedhound`。
+
+# 运行容器（GHCR 镜像用 ghcr.io/schalkiii/reseedhound，本地构建用 seedhound）
 docker run -d \
   --name seedhound \
   --restart unless-stopped \
@@ -155,8 +161,7 @@ docker run -d \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/logs:/app/logs \
   -v /path/to/BT_backup:/app/torrents \
-  seedhound
-```
+  ghcr.io/schalkiii/reseedhound
 
 | 挂载项        | 说明                                                        |
 | ------------- | ----------------------------------------------------------- |
@@ -166,7 +171,124 @@ docker run -d \
 | `logs/`       | 运行日志，方便排查问题                                      |
 | `torrents/`   | 种子文件目录（对应 `downloader.torrent_dir`），只读挂载即可 |
 
+**运行模式（环境变量 `SEEDHOUND_MODE`）**：`run.py` 在容器启动时会直接读取该变量选择运行模式（无子命令时）；也可在 `docker run` 后追加子命令覆盖。
+
+| 值            | 行为                                                         |
+| ------------- | ------------------------------------------------------------ |
+| `reseed`      | 一次性运行辅种引擎后退出（默认，向后兼容）                   |
+| `schedule`    | 按 `config.yaml` 中 `scheduler` 配置**循环定时运行**（常驻） |
+| `sync-cookies`| 同步 Cookie Cloud 到 `sites.yaml` 后退出                     |
+
+```bash
+# 常驻定时运行（推荐）：每 interval_minutes 自动辅种一轮
+docker run -d \
+  --name seedhound \
+  --restart unless-stopped \
+  -e SEEDHOUND_MODE=schedule \
+  -v $(pwd)/config.yaml:/app/config.yaml \
+  -v $(pwd)/sites.yaml:/app/sites.yaml \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  -v /path/to/BT_backup:/app/torrents \
+  ghcr.io/schalkiii/reseedhound
+```
+
+> **提示**：若 `config.yaml` 中 `scheduler.enabled=true`，即便使用默认 `reseed` 模式，容器也会自动切换为定时运行，无需额外设置环境变量。
+
+### 从 GHCR 拉取镜像（推荐）
+
+GitHub 原生容器仓库为 **GHCR（`ghcr.io`）**。SeedHound 的镜像发布在 `ghcr.io/<owner>/<repo>`（本项目默认 `ghcr.io/schalkiii/reseedhound`），可直接拉取，无需本地 `docker build`。
+
+**可用标签**：
+
+| 标签            | 说明                                        |
+| --------------- | ------------------------------------------- |
+| `latest`        | 最新发布版本                                |
+| `v1.2.3`        | 精确版本（语义化版本，对应 Release 标签）   |
+| `1.2`           | 主.次 版本通道                             |
+
+**拉取与运行（docker / wslc 通用）**：
+
+```bash
+# docker
+docker pull ghcr.io/schalkiii/reseedhound:latest
+docker run -d --name seedhound -e SEEDHOUND_MODE=schedule \
+  -v $(pwd)/config.yaml:/app/config.yaml \
+  -v $(pwd)/sites.yaml:/app/sites.yaml \
+  -v $(pwd)/data:/app/data -v $(pwd)/logs:/app/logs \
+  -v /path/to/BT_backup:/app/torrents \
+  ghcr.io/schalkiii/reseedhound
+
+# wslc（语法一致）
+wslc pull ghcr.io/schalkiii/reseedhound:latest
+wslc run -d --name seedhound -e SEEDHOUND_MODE=schedule \
+  -v $(pwd)/config.yaml:/app/config.yaml \
+  -v $(pwd)/sites.yaml:/app/sites.yaml \
+  -v $(pwd)/data:/app/data -v $(pwd)/logs:/app/logs \
+  -v /path/to/BT_backup:/app/torrents \
+  ghcr.io/schalkiii/reseedhound
+```
+
+> **发布方式**：镜像通过仓库内的 GitHub Actions 工作流（`.github/workflows/docker.yml`）自动发布——在 GitHub 上打 `v*` 标签或发布 Release 即触发构建并推送到 GHCR，使用仓库自带的 `GITHUB_TOKEN` 鉴权，无需手动 `docker login`。首次使用前需在仓库 **Settings → Packages** 中确认已开启容器包的写入权限。
+
 **注意**：Docker 容器内需要访问宿主机的下载器（qBittorrent/Transmission），请确保 `config.yaml` 中 `downloader.host` 使用宿主机可访问的 IP（如 `host.docker.internal` 或宿主机真实 IP），不要使用 `127.0.0.1`。
+
+### 使用 wslc 部署（微软原生 WSL 容器）
+
+`wslc`（WSL Container CLI，`wslc.exe`）是微软在 Build 2026 随 WSL 预览版**内置**的 Linux 容器命令行，语法与 docker 高度一致，**无需安装 Docker Desktop**。SeedHound 的镜像在 wslc 下同样适用（微软同时提供 `container.exe` 别名，二者等价）；镜像同样来自 GHCR（见上方"从 GHCR 拉取镜像"）。
+
+**① 安装 / 升级 WSL 预览版**（wslc 随其一同发布）
+
+```bash
+wsl --update --pre-release
+```
+
+**② 构建镜像**（命令与 docker 一致）
+
+```bash
+wslc build -t seedhound .
+```
+
+**③ 运行容器（定时常驻）**
+
+```bash
+wslc run -d \
+  --name seedhound \
+  --restart unless-stopped \
+  -e SEEDHOUND_MODE=schedule \
+  -v $(pwd)/config.yaml:/app/config.yaml \
+  -v $(pwd)/sites.yaml:/app/sites.yaml \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  -v /path/to/BT_backup:/app/torrents \
+  seedhound
+```
+
+> 挂卷（`-v`）、环境变量（`-e`）、后台运行（`-d`）、容器命名（`--name`）等参数写法与 docker 完全相同；个别参数若 wslc 暂未支持，按提示移除即可。
+
+**④ 常用运维命令（对照 docker）**
+
+| 操作 | wslc 命令 |
+| --- | --- |
+| 查看运行容器 | `wslc container ps` |
+| 查看日志 | `wslc logs -f seedhound` |
+| 停止 / 删除 | `wslc container stop seedhound` / `wslc container rm seedhound` |
+| 列出镜像 | `wslc image ls` |
+| 进入容器 | `wslc exec -it seedhound sh` |
+
+**⑤ 访问宿主机下载器（关键）**
+
+wslc 容器本质是一个 WSL 环境，容器内 `127.0.0.1` 指向容器自身。若下载器（qBittorrent/Transmission）装在 Windows 宿主机，请在 `config.yaml` 的 `downloader.host` 填写 Windows 宿主机的可达地址（通常为 `host.wsl.localhost` 或宿主机局域网 IP，按实际网络拓扑调整），**不要填 `127.0.0.1`**。种子目录挂载同理，Windows 侧真实路径或 WSL 内路径均可。
+
+```yaml
+downloader:
+  type: qbittorrent
+  host: host.wsl.localhost   # 下载器装在 Windows 宿主机时（按实际网络拓扑调整）
+  port: 8080
+  username: admin
+  password: your_password_here
+  torrent_dir: /app/torrents   # 对应挂载进容器的种子目录
+```
 
 ### 配置
 
@@ -267,6 +389,9 @@ python run.py --site 站点A,站点B,站点C
 
 # 跳过飞书通知
 python run.py --no-feishu
+
+# 定时运行（原生调度器，按 config 中 scheduler 配置循环执行）
+python run.py schedule
 ```
 
 | 参数           | 说明                                               |
@@ -276,6 +401,34 @@ python run.py --no-feishu
 | `--site S1,S2` | 仅对指定站点辅种（逗号分隔）                       |
 | `--no-feishu`  | 跳过飞书通知推送                                   |
 | `sync-cookies` | 从 Cookie Cloud 同步 Cookie 到 sites.yaml          |
+| `schedule`     | 子命令：按 `scheduler` 配置循环定时运行辅种引擎    |
+
+### 定时运行（原生调度器）
+
+SeedHound 内置原生定时运行能力，**无需依赖外部 cron 或编排器**。调度器在进程内以异步循环方式运行辅种引擎，每轮结束后按配置间隔休眠，并支持 `SIGINT`/`SIGTERM` 优雅退出（收到信号后完成当前轮再停止）。
+
+配置（在 `config.yaml` 中）：
+
+```yaml
+scheduler:
+  enabled: false          # true 时，默认 reseed 会自动切换为定时运行
+  interval_minutes: 360   # 每轮间隔（分钟）
+  startup_delay: 0        # 启动后延迟多少秒再首轮（错峰用）
+  run_on_start: true      # 启动后是否立即执行首轮（false 则先等一个完整间隔）
+```
+
+三种触发方式：
+
+```bash
+# 方式一：显式子命令（最明确）
+python run.py schedule
+
+# 方式二：config 中 scheduler.enabled=true 后，默认运行即自动定时
+python run.py
+
+# 方式三：Docker 中通过环境变量（见下方部署章节）
+docker run -e SEEDHOUND_MODE=schedule ... seedhound
+```
 
 ### Cookie 同步
 
