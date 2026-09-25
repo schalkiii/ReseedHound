@@ -9,6 +9,7 @@ class Config:
         self, config_path: str = "config.yaml", sites_path: str = "sites.yaml"
     ):
         self._config = self._load_yaml(config_path)
+        self._sites_path = sites_path
         self._sites = self._load_yaml(sites_path)
 
     @staticmethod
@@ -107,6 +108,22 @@ class Config:
             for s in self._sites.get("sites", [])
             if s.get("enabled", True) and s.get("passkey")
         ]
+
+    @property
+    def sites_path(self) -> str:
+        return self._sites_path
+
+    def reload_sites(self) -> None:
+        """重新从磁盘加载 sites 配置（CookieCloud 同步写回后调用，使后续引擎使用新 Cookie）。"""
+        self._sites = self._load_yaml(self._sites_path)
+
+    @property
+    def cookiecloud_config(self) -> dict:
+        return self._config.get("cookiecloud", {}) or {}
+
+    @property
+    def cookiecloud_enabled(self) -> bool:
+        return bool(self.cookiecloud_config.get("enable", False))
 
     def get(self, key: str, default: Any = None) -> Any:
         keys = key.split(".")

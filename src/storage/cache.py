@@ -33,6 +33,19 @@ class TorrentCache:
                 CREATE INDEX IF NOT EXISTS idx_pieces_hash
                 ON pieces_cache(pieces_hash)
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS dead_torrents (
+                    site_name TEXT NOT NULL,
+                    torrent_id INTEGER NOT NULL,
+                    first_dead_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_dead_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (site_name, torrent_id)
+                )
+            """)
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_dead_first
+                ON dead_torrents(first_dead_at)
+            """)
             await db.commit()
 
     async def is_cached(self, pieces_hash: str) -> bool:
@@ -137,4 +150,41 @@ class TorrentCache:
         async with self._lock:
             async with aiosqlite.connect(str(self._db_path)) as db:
                 await db.execute("DELETE FROM pieces_cache")
+                await db.commit()
+
+    async def load_persistent_dead(self, min_days: int = 15) -> set[tuple[str, int]]:
+        """返回持续死亡达到 min_days 天的 (site, torrent_id) 集合，用于硬跳过。"""
+        result: set[tuple[str, int]] = set()
+        async with aiosqlite.connect(str(self._db_path)) as db:
+            cursor = await db.execute(
+                "SELECT site_name, torrent_id FROM dead_torrents "
+                "WHERE julianday('now') - julianday(first_dead_at) >= ?",
+                (min_days,),
+            )
+            for site, tid in await cursor.fetchall():
+                result.add((site, int(tid)))
+        return result
+
+    async def record_dead(self, site_name: str, torrent_id: int):
+        """记录一次死种探测；首次写入 first_dead_at，后续仅刷新 last_dead_at。"""
+        async with self._lock:
+            async with aiosqlite.connect(str(self._db_path)) as db:
+                await db.execute(
+                    "INSERT INTO dead_torrents "
+                    "(site_name, torrent_id, first_dead_at, last_dead_at) "
+                    "VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(site_name, torrent_id) DO UPDATE "
+                    "SET last_dead_at = CURRENT_TIMESTAMP",
+                    (site_name, torrent_id),
+                )
+                await db.commit()
+
+    async def clear_dead_if_alive(self, site_name: str, torrent_id: int):
+        """某 (站点, 种子) 可成功下载时，清除其死种持久化记录。"""
+        async with self._lock:
+            async with aiosqlite.connect(str(self._db_path)) as db:
+                await db.execute(
+                    "DELETE FROM dead_torrents WHERE site_name = ? AND torrent_id = ?",
+                    (site_name, torrent_id),
+                )
                 await db.commit()

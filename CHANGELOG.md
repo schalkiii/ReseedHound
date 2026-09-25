@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-09-25 — 调度器 CookieCloud 自动同步 + 统计/超时/死种优化
+
+### 新增
+- **调度器运行前自动同步 CookieCloud**：`cookiecloud.enable=true` 时，原生调度器在每轮辅种引擎启动前自动执行一次 CookieCloud 同步；同步失败仅告警并继续本轮，不中断辅种
+- **可复用同步模块**：抽出 `src/cookie_sync.py`，CLI `sync-cookies` 子命令与调度器共用同一实现（`run.py` 不再重复同步逻辑）
+- **死种缓存持久化**：连续 15 天判定为死种的记录持久化到 `cache.db`，启动时加载为已知死种
+
+### 优化 / 修复
+- **统计去重**：`add_one` 改为"片段级"累计失败数，仅当某源种子最终没有任何站点成功辅种时才计入 `failed_count` / `site_failed`，重试成功前的失败不再被统计（避免夸大真实失败数）
+- **超时跳过阈值**：累计下载超时跳过阈值由 20 次调整为 30 次（`MAX_TIMEOUT_ERRORS`）
+- **阶段3静默跳过补全日志**：源种子下载中/离线、已知死种等跳过场景均输出计数与日志，消除诊断盲区
+
+### 配置
+- `config.yaml` 新增 `cookiecloud` 配置块：`enable`、`url`、`uuid`、`password`
+- `config.yaml` `global.download_timeout` 由 15 调整为 45（配合超时跳过阈值）
+- `sites.yaml`：TorrentHub 已 `enable: false`（站点关闭）；cdfile 维护中暂未禁用
+
 ## 2026-07-07 — 原生定时运行
 
 ### 新增

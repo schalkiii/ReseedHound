@@ -25,9 +25,10 @@ DEAD_TORRENT_PATTERNS = [
 
 
 class DeadTorrentCache:
-    def __init__(self):
+    def __init__(self, torrent_cache=None):
         self._dead: set[tuple[str, int]] = set()
         self._lock = asyncio.Lock()
+        self._torrent_cache = torrent_cache
 
     def is_dead(self, site_name: str, torrent_id: int) -> bool:
         return (site_name, torrent_id) in self._dead
@@ -35,6 +36,13 @@ class DeadTorrentCache:
     async def mark_dead(self, site_name: str, torrent_id: int):
         async with self._lock:
             self._dead.add((site_name, torrent_id))
+        if self._torrent_cache is not None:
+            await self._torrent_cache.record_dead(site_name, torrent_id)
+
+    async def seed(self, entries: set[tuple[str, int]]):
+        """启动时把持久化且达阈值的死种灌入内存集合，避免重复下载。"""
+        async with self._lock:
+            self._dead.update(entries)
 
     def size(self) -> int:
         return len(self._dead)

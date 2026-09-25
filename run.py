@@ -2,39 +2,18 @@ import argparse
 import asyncio
 import logging
 import os
-import re
 import sys
 from pathlib import Path
 
-import yaml
-
 sys.path.insert(0, str(Path(__file__).parent))
 
+from src.cookie_sync import sync_cookies  # noqa: E402
 from src.engine.seeder import ReseedEngine  # noqa: E402
-from src.network.cookiecloud import CookieCloudClient  # noqa: E402
 from src.notify.feishu import FeishuNotifier  # noqa: E402
 from src.report.generator import ReportGenerator  # noqa: E402
 from src.scheduler import ReseedScheduler  # noqa: E402
 from src.storage.config import Config  # noqa: E402
 from src.utils.logger import setup_logger, trim_log_file  # noqa: E402
-
-
-class QuotedStr(str):
-    pass
-
-
-class _WideDumper(yaml.Dumper):
-    pass
-
-
-_WideDumper.best_width = 999999
-
-
-def _quoted_str_representer(dumper, data):
-    return dumper.represent_scalar("tag:yaml.org,2002:str", str(data), style='"')
-
-
-yaml.add_representer(QuotedStr, _quoted_str_representer)
 
 
 async def cmd_sync_cookies(args):
@@ -43,71 +22,12 @@ async def cmd_sync_cookies(args):
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    logger = logging.getLogger("seedhound")
-    logger.info("从 CookieCloud 同步站点 Cookie...")
-
-    client = CookieCloudClient(
-        base_url=args.cookiecloud_url,
+    return await sync_cookies(
+        url=args.cookiecloud_url,
         uuid=args.cookiecloud_uuid,
         password=args.cookiecloud_password,
+        sites_path=args.sites_path or "sites.yaml",
     )
-    await client.start()
-    try:
-        cookies_by_domain = await client.fetch_cookies()
-        if not cookies_by_domain:
-            logger.error("未获取到任何 Cookie 数据")
-            return 1
-
-        cookie_domains = set(cookies_by_domain.keys())
-        logger.info("从 CookieCloud 获取到 %d 个域名的 Cookie", len(cookie_domains))
-
-        sites_path = Path(args.sites_path or "sites.yaml")
-        with open(sites_path, encoding="utf-8") as f:
-            sites_data = yaml.safe_load(f) or {}
-
-        sites = sites_data.get("sites", [])
-        matched_count = 0
-        for site in sites:
-            site_url = site.get("url", "")
-            matched_domain = CookieCloudClient.match_domain(site_url, cookie_domains)
-            if matched_domain:
-                cookie_str = CookieCloudClient.cookies_to_string(
-                    cookies_by_domain[matched_domain]
-                )
-                site["cookie"] = QuotedStr(cookie_str)
-                matched_count += 1
-                logger.info(
-                    "  [OK] %s <- %s (%d 条 Cookie)",
-                    site.get("name", "?"),
-                    matched_domain,
-                    len(cookies_by_domain[matched_domain]),
-                )
-            else:
-                logger.debug("  [--] %s 未匹配到 Cookie", site.get("name", "?"))
-
-        with open(sites_path, "w", encoding="utf-8") as f:
-            yaml.dump(
-                sites_data,
-                f,
-                Dumper=_WideDumper,
-                allow_unicode=True,
-                default_flow_style=False,
-                sort_keys=False,
-            )
-
-        raw = sites_path.read_text(encoding="utf-8")
-        raw = re.sub(r"\\\n    \\ ", " ", raw)
-        sites_path.write_text(raw, encoding="utf-8")
-
-        logger.info(
-            "同步完成: %d/%d 个站点已更新 Cookie → %s",
-            matched_count,
-            len(sites),
-            sites_path,
-        )
-        return 0
-    finally:
-        await client.close()
 
 
 async def cmd_reseed(args, config: Config):

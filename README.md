@@ -451,6 +451,8 @@ cookiecloud:
   password: "your-password" # 解密密码
 ```
 
+**定时自动同步**：当 `enable: true` 时，原生调度器（`schedule` 子命令，或 `scheduler.enabled=true` 下的 `reseed`）会在**每轮辅种引擎启动前**自动执行一次 CookieCloud 同步。同步失败时仅记录告警并继续本轮（沿用已有 Cookie），不会中断辅种；需确保 Cookie Cloud 服务端（如 Docker 容器）处于运行状态。
+
 **使用**：
 
 ```bash

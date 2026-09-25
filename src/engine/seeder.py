@@ -26,6 +26,7 @@ class ReseedStats:
     succeeded_count: int = 0
     failed_count: int = 0
     dead_count: int = 0
+    skipped_count: int = 0
     site_details: dict = field(default_factory=dict)
     site_match_counts: dict = field(default_factory=dict)
     site_succeeded: dict = field(default_factory=dict)
@@ -51,7 +52,7 @@ class ReseedEngine:
     def __init__(self, config: Config):
         self._config = config
         self._cache = TorrentCache(config.db_path)
-        self._dead_cache = DeadTorrentCache()
+        self._dead_cache = DeadTorrentCache(torrent_cache=self._cache)
 
         site_cookies = {}
         host_intervals = {}
@@ -105,6 +106,10 @@ class ReseedEngine:
 
     async def start(self):
         await self._cache.init()
+        persistent_dead = await self._cache.load_persistent_dead(min_days=15)
+        if persistent_dead:
+            await self._dead_cache.seed(persistent_dead)
+            logger.info("载入持久化死种(>=15天): %d 条，本轮回跳过下载", len(persistent_dead))
         await self._client.start()
         if self._jackett:
             await self._jackett.start()
@@ -484,7 +489,9 @@ class ReseedEngine:
         add_sem = asyncio.Semaphore(20)
         no_access_sites: set[str] = set()
         site_serious_errors: dict[str, int] = {}
+        site_timeout_errors: dict[str, int] = {}
         MAX_SERIOUS_ERRORS = 3
+        MAX_TIMEOUT_ERRORS = 30
 
         SERIOUS_ERRORS = frozenset(
             {
@@ -514,9 +521,19 @@ class ReseedEngine:
 
                 dl_info = await self._downloader.get_torrent_info(entry["info_hash"])
                 if not dl_info:
+                    self._stats.skipped_count += 1
+                    logger.debug(
+                        "跳过辅种: 源种子 %s 无法从下载器获取信息(可能已移除/离线)",
+                        entry.get("file_name", pieces_hash),
+                    )
                     return
 
                 if dl_info["state"] == "downloading":
+                    self._stats.skipped_count += 1
+                    logger.debug(
+                        "跳过辅种: 源种子 %s 正在下载中",
+                        entry.get("file_name", pieces_hash),
+                    )
                     return
 
                 skip_hash = self._config.destination_downloader_config.get(
@@ -528,6 +545,10 @@ class ReseedEngine:
                 torrent_tag = self._config.destination_downloader_config.get(
                     "tag", "SeedHound"
                 )
+
+                piece_failed = 0
+                piece_failed_by_site: dict[str, int] = {}
+                piece_succeeded = False
 
                 for site_name, torrent_id, site_url in matches:
                     if site_name in no_access_sites:
@@ -547,8 +568,27 @@ class ReseedEngine:
                         torrent_id=torrent_id,
                     )
                     if not torrent_data:
-                        self._stats.failed_count += 1
-                        if error_reason in SERIOUS_ERRORS:
+                        if error_reason == "dead_cached":
+                            # 已知死种(含持久化)，直接跳过，不计入失败
+                            self._stats.skipped_count += 1
+                            continue
+                        piece_failed += 1
+                        piece_failed_by_site[site_name] = (
+                            piece_failed_by_site.get(site_name, 0) + 1
+                        )
+                        if error_reason == "timeout":
+                            site_timeout_errors[site_name] = (
+                                site_timeout_errors.get(site_name, 0) + 1
+                            )
+                            if site_timeout_errors[site_name] >= MAX_TIMEOUT_ERRORS:
+                                if site_name not in no_access_sites:
+                                    no_access_sites.add(site_name)
+                                    logger.warning(
+                                        "站点 %s 累计 %d 次下载超时，跳过后续下载",
+                                        site_name,
+                                        site_timeout_errors[site_name],
+                                    )
+                        elif error_reason in SERIOUS_ERRORS:
                             site_serious_errors[site_name] = (
                                 site_serious_errors.get(site_name, 0) + 1
                             )
@@ -568,7 +608,10 @@ class ReseedEngine:
                         file_name=entry.get("file_name", ""),
                     )
                     if not parsed:
-                        self._stats.failed_count += 1
+                        piece_failed += 1
+                        piece_failed_by_site[site_name] = (
+                            piece_failed_by_site.get(site_name, 0) + 1
+                        )
                         head_hex = (
                             torrent_data[:20].hex()
                             if len(torrent_data) >= 20
@@ -583,8 +626,11 @@ class ReseedEngine:
                         )
                         continue
                     new_info_hash = parsed["info_hash"]
+                    # 成功下载并解析，说明该 (站点, 种子) 仍存活，清除死种持久化记录
+                    await self._cache.clear_dead_if_alive(site_name, torrent_id)
 
                     if new_info_hash in qb_info_hashes:
+                        piece_succeeded = True
                         await self._cache.add_reseed_record(
                             pieces_hash,
                             site_name,
@@ -599,6 +645,7 @@ class ReseedEngine:
                         tag=torrent_tag,
                     )
                     if success:
+                        piece_succeeded = True
                         self._stats.succeeded_count += 1
                         self._stats.site_succeeded[site_name] = (
                             self._stats.site_succeeded.get(site_name, 0) + 1
@@ -630,11 +677,18 @@ class ReseedEngine:
                                     site_name,
                                 )
                     else:
-                        self._stats.failed_count += 1
-                        self._stats.site_failed[site_name] = (
-                            self._stats.site_failed.get(site_name, 0) + 1
+                        piece_failed += 1
+                        piece_failed_by_site[site_name] = (
+                            piece_failed_by_site.get(site_name, 0) + 1
                         )
                     await asyncio.sleep(0.3)
+
+                if not piece_succeeded:
+                    self._stats.failed_count += piece_failed
+                    for site, cnt in piece_failed_by_site.items():
+                        self._stats.site_failed[site] = (
+                            self._stats.site_failed.get(site, 0) + cnt
+                        )
 
         tasks = [add_one(ph, matches) for ph, matches in self._match_map.items()]
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -643,4 +697,9 @@ class ReseedEngine:
             logger.info(
                 "基于 tracker 在查询阶段跳过 (同站已知种子): %d 条",
                 self._stats.tracker_skip_count,
+            )
+        if self._stats.skipped_count:
+            logger.info(
+                "阶段3静默跳过(源种子下载中/离线/已知死种): %d 次",
+                self._stats.skipped_count,
             )

@@ -7,6 +7,7 @@ from .engine.seeder import ReseedEngine
 from .notify.feishu import FeishuNotifier
 from .report.generator import ReportGenerator
 from .storage.config import Config
+from .cookie_sync import sync_cookies
 
 logger = logging.getLogger("seedhound.scheduler")
 
@@ -39,8 +40,32 @@ class ReseedScheduler:
             logger.info("收到退出信号，调度器将在本轮结束后停止...")
             self._stop_event.set()
 
+    async def _sync_cookies(self):
+        """运行前从 CookieCloud 同步站点 Cookie（受 config 的 cookiecloud.enable 控制）。
+
+        同步失败时仅告警并继续本轮，避免 CookieCloud 不可达导致整轮辅种失败。
+        """
+        try:
+            cc = self._config.cookiecloud_config
+            result = await sync_cookies(
+                url=cc.get("url", "http://127.0.0.1:8082/cookie"),
+                uuid=cc.get("uuid", "3bXA8nVbF8XnfBmXk5aA1y"),
+                password=cc.get("password", "pNCWDegC882djqqALYtxjs"),
+                sites_path=self._config.sites_path,
+            )
+            if result == 0:
+                # 同步写回 sites.yaml 后重新加载内存配置，使本轮引擎使用最新 Cookie
+                self._config.reload_sites()
+                logger.info("CookieCloud 同步完成，已重新加载 sites 配置")
+            else:
+                logger.warning("CookieCloud 同步未获取到 Cookie，本轮使用已有配置")
+        except Exception as exc:
+            logger.warning("CookieCloud 同步异常(本轮使用已有 Cookie): %s", exc)
+
     async def _run_once(self):
         """执行单轮辅种（与一次性运行完全一致的代码路径）。"""
+        if self._config.cookiecloud_enabled:
+            await self._sync_cookies()
         engine = ReseedEngine(self._config)
         try:
             await engine.start()
