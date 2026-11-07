@@ -71,3 +71,13 @@ jackett:
   concurrency: 5
   search_interval: 1.0
   timeout: 30
+
+# === CookieCloud 配置（可选）===
+# enable: true 时，调度器在每轮辅种开始前自动同步站点 Cookie
+# 凭据只放本地 config.yaml，代码中不保留任何默认值
+cookiecloud:
+  enable: false
+  url: "http://127.0.0.1:8082/cookie"
+  uuid: "your-uuid"
+  password: "your-password"
+

@@ -12,6 +12,14 @@
   种子长期停在暂停态；状态集合提取为 `STOPPED_COMPLETE_STATES`（含旧名、新名与 Transmission 的 `completed`）
 - **测试断言与现役报告格式对齐**：`test_report.py` 仍断言早已废弃的 `启用站点:      14` 等旧排版（改动前即为红）
 
+### 安全
+- **移除代码里的 CookieCloud 凭据**：`run.py` 的 argparse 默认值与 `src/scheduler.py` 的兜底默认值都硬编码了
+  真实 uuid / 密码，且早已进入公开 git 历史。现改为只从本地 `config.yaml` 的 `cookiecloud` 块读取，
+  缺失时 CLI 报错退出、调度器告警跳过；**这两个值必须到 CookieCloud 侧轮换**，删代码回收不了历史泄露
+- **日志统一脱敏 passkey**：下载链接形如 `.../download.php?id=1&passkey=xxx`，此前会随「下载失败/请求失败」
+  日志落盘（历史日志中 5859 行）。现在在 `setup_logger` 的两个 handler 上挂 `_RedactSecretsFilter`，
+  把 README 的「passkey 不出现在日志中」从约定变成不变量
+
 ### 依赖
 - `qbittorrent-api` 下限由 `>=2024.2.59` 提到 `>=2026.8.1`：该版本起对 `torrents/add` 同时发送
   `skip_checking` 与 `seedMode`。5.3.0 只认 `seedMode`，且对不认识的参数静默忽略，更早的版本会让

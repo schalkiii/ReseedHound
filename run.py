@@ -22,10 +22,22 @@ async def cmd_sync_cookies(args):
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    # 凭据只从本地 config.yaml 的 cookiecloud 块读取，代码里不保留任何默认值
+    config = Config(args.config, args.sites_path or "sites.yaml")
+    cookiecloud = config.cookiecloud_config
+    url = args.cookiecloud_url or cookiecloud.get("url", "http://127.0.0.1:8082/cookie")
+    uuid = args.cookiecloud_uuid or cookiecloud.get("uuid")
+    password = args.cookiecloud_password or cookiecloud.get("password")
+    if not (uuid and password):
+        logging.getLogger("seedhound").error(
+            "CookieCloud 未配置：请在 %s 的 cookiecloud 块填写 uuid 与 password",
+            args.config,
+        )
+        return 1
     return await sync_cookies(
-        url=args.cookiecloud_url,
-        uuid=args.cookiecloud_uuid,
-        password=args.cookiecloud_password,
+        url=url,
+        uuid=uuid,
+        password=password,
         sites_path=args.sites_path or "sites.yaml",
     )
 
@@ -148,14 +160,14 @@ async def main():
     cookie_parser.add_argument(
         "--cookiecloud-uuid",
         type=str,
-        default="3bXA8nVbF8XnfBmXk5aA1y",
-        help="CookieCloud UUID",
+        default=None,
+        help="CookieCloud UUID（缺省读取 config.yaml 的 cookiecloud.uuid）",
     )
     cookie_parser.add_argument(
         "--cookiecloud-password",
         type=str,
-        default="pNCWDegC882djqqALYtxjs",
-        help="CookieCloud 密码",
+        default=None,
+        help="CookieCloud 解密密码（缺省读取 config.yaml 的 cookiecloud.password）",
     )
     cookie_parser.add_argument(
         "--config",

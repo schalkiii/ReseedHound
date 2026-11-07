@@ -115,6 +115,26 @@ def test_stopped_complete_states():
     print("PASS: 自动开始状态集合覆盖 5.x 改名")
 
 
+def test_log_redaction():
+    """日志里的 passkey 必须被打码（README 的安全承诺：passkey 不出现在日志中）"""
+    import logging
+
+    from src.utils.logger import _RedactSecretsFilter, redact_secrets
+
+    url = "https://pt.example.com/download.php?id=1&passkey=deadbeef00112233"
+    masked = redact_secrets(url)
+    assert "deadbeef00112233" not in masked
+    assert "passkey=***" in masked
+    assert "id=1" in masked
+
+    record = logging.LogRecord(
+        "seedhound", logging.WARNING, __file__, 1, "下载失败 %s", (url,), None
+    )
+    _RedactSecretsFilter().filter(record)
+    assert "deadbeef00112233" not in record.getMessage()
+    print("PASS: 日志 passkey 脱敏")
+
+
 if __name__ == "__main__":
     test_bencode_roundtrip()
     test_bencode_types()
@@ -124,6 +144,7 @@ if __name__ == "__main__":
     test_config_loading()
     test_add_result_compat()
     test_stopped_complete_states()
+    test_log_redaction()
     print()
     print("=" * 50)
     print("  所有核心模块测试通过!")

@@ -97,7 +97,8 @@ notify:
 ### 安全设计
 
 - `config.yaml` / `sites.yaml` 不入库，使用 `.example` 文件作为模板
-- passkey 不出现在日志中
+- 代码中不保留任何凭据默认值，CookieCloud 的 uuid / 密码只从本地 `config.yaml` 读取
+- 日志写入前统一脱敏 `passkey`（`src/utils/logger.py` 的日志过滤器，覆盖文件与控制台两个 handler）
 - 飞书 webhook 仅在配置文件中声明
 
 ## 目录结构

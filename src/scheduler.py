@@ -48,10 +48,15 @@ class ReseedScheduler:
         """
         try:
             cc = self._config.cookiecloud_config
+            uuid = cc.get("uuid")
+            password = cc.get("password")
+            if not (uuid and password):
+                logger.warning("CookieCloud 未配置 uuid/password，跳过本轮 Cookie 同步")
+                return
             result = await sync_cookies(
                 url=cc.get("url", "http://127.0.0.1:8082/cookie"),
-                uuid=cc.get("uuid", "3bXA8nVbF8XnfBmXk5aA1y"),
-                password=cc.get("password", "pNCWDegC882djqqALYtxjs"),
+                uuid=uuid,
+                password=password,
                 sites_path=self._config.sites_path,
             )
             if result == 0:

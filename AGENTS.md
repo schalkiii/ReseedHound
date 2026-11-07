@@ -49,6 +49,9 @@ Python 3.13 + asyncio；`qbittorrent-api` / `transmission-rpc` 操作下载器�
 - **`pausedUP` 在 5.x 改名 `stoppedUP`**（`paused`→`stopped` 同一波改名）；状态判断要用
   `STOPPED_COMPLETE_STATES`，不要写死旧名。
 - **服务端对不认识的参数不报错**：任何「调了没反应」先去看 WebAPI 版本号，别怀疑业务逻辑。
+- **凭据不写进代码默认值**：CookieCloud 的 uuid / password 只从 `config.yaml` 的 `cookiecloud` 块读。
+  历史上的 argparse 默认值已随公开仓库泄露，删代码回收不了，只能在 CookieCloud 侧轮换。
+  日志统一由 `_RedactSecretsFilter` 脱敏 `passkey`，新增日志点无需各自处理。
 
 ## 当前状态
 
