@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import signal
-from typing import Optional
 
 from .engine.seeder import ReseedEngine
 from .notify.feishu import FeishuNotifier
@@ -27,7 +26,9 @@ class ReseedScheduler:
 
     def _install_signal_handlers(self, loop: asyncio.AbstractEventLoop):
         """注册退出信号。Windows 不支持 loop.add_signal_handler，回退到 signal 模块。"""
-        handler = lambda *_: self._request_stop()
+        def handler(*_):
+            self._request_stop()
+
         try:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, self._request_stop)
