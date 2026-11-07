@@ -56,9 +56,10 @@ def test_report_generator():
     assert "28456" in report
     assert "sewerpt" in report
     assert "6434" in report
-    assert "启用站点:      14" in report
-    assert "有匹配站点:    11" in report
-    assert "无匹配站点:     3" in report
+    # 与 generator.py 现役汇总行保持一致："[ 站点汇总 ]  启用 N 个  |  有匹配 N 个  |  无匹配 N 个"
+    assert "启用 14 个" in report
+    assert "有匹配 11 个" in report
+    assert "无匹配 3 个" in report
 
     md = generator.generate_markdown(stats)
     assert "37729" in md

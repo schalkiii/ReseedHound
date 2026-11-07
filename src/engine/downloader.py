@@ -89,6 +89,24 @@ class QbittorrentDownloader(DownloaderBase):
             logger.debug("查询种子信息失败 %s: %s", info_hash, e)
         return None
 
+    @staticmethod
+    def _is_add_success(result) -> bool:
+        """
+        判定 torrents_add 是否受理成功。
+
+        qBittorrent 的返回体随版本而变：WebAPI v2.14.0（qB 5.2）起改成 JSON 计数
+        （success_count / failure_count / pending_count），更早才是纯文本 "Ok."；
+        qbittorrent-api 把前者包成字典、后者返回 str。只判 `== "Ok."` 会把
+        5.2/5.3 上的每次成功添加都当成失败（且不报错，只是静默 False）。
+        """
+        if isinstance(result, str):
+            # HTTP 200 且一条都没加进去时服务端会返回 409 并由库抛异常，
+            # 因此空响应体在这里不算失败
+            return result in ("Ok.", "")
+        if isinstance(result, dict):
+            return bool(result.get("success_count") or result.get("pending_count"))
+        return True
+
     async def add_torrent(
         self,
         download_url: Optional[str] = None,
@@ -114,7 +132,11 @@ class QbittorrentDownloader(DownloaderBase):
                 None,
                 lambda: self._client.torrents_add(**kwargs),
             )
-            return result == "Ok."
+            if self._is_add_success(result):
+                return True
+            # 失败原因必须可见，否则统计里只体现为一句"失败"却无任何线索
+            logger.warning("添加种子未被受理: 返回 %r", result)
+            return False
         except Exception as e:
             logger.error("添加种子失败: %s", e)
             return False

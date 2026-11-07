@@ -542,6 +542,15 @@ SeedHound 在辅种流水线的不同阶段部署了三层过滤，逐层拦截�
 
 这确保辅种操作「即加即生效」，无需用户手动启动。
 
+判定所用的状态名同时覆盖新旧 qBittorrent：`pausedUP`（≤ 4.6）与 `stoppedUP`（5.x 改名）、
+以及 Transmission 侧的 `completed`。只判旧名会让 5.3.0 上的「自动开始」永不触发——种子加进去了却
+一直停在暂停态。相关实现在 `src/engine/seeder.py` 的 `STOPPED_COMPLETE_STATES`。
+
+`torrents_add` 的成功判定同样分版本：WebAPI v2.14.0（qB 5.2）起返回 JSON 计数
+（`success_count` / `failure_count` / `pending_count`），更早才返回纯文本 `Ok.`；只判 `== "Ok."`
+会把 5.2/5.3 上的每次成功添加都记成失败，且辅种记录不落库、下一轮重复添加。见
+`QbittorrentDownloader._is_add_success`。
+
 ```
 ┌────────────┐    ┌─────────────┐    ┌──────────────┐
 │  Parser    │    │  Seeder     │    │  Downloader  │
@@ -571,7 +580,7 @@ SeedHound 在辅种流水线的不同阶段部署了三层过滤，逐层拦截�
 
 1. **扫描阶段**：递归遍历 `torrent_dir`，解析 `.torrent` 文件提取 `pieces_hash`，增量更新缓存
 2. **查询阶段**：Pieces-hash 模式批量 POST 到各站点 `/api/pieces-hash`；Jackett 模式通过 Torznab API 跨站搜索
-3. **添加阶段**：匹配到的种子依次执行 ① 从站点下载 `.torrent` → ② pieces_hash 校验 → ③ 添加到下载器（`skip_hash_check=false`, `paused=true`，由 qBittorrent 自行 recheck 确认文件匹配后做种）
+3. **添加阶段**：匹配到的种子依次执行 ① 从站点下载 `.torrent` → ② pieces_hash 校验 → ③ 添加到下载器。pieces_hash 模式按 `config.yaml` 的 `downloader.skip_hash_check`（默认 `true`，即直接认定完成）与 `downloader.auto_start`（默认 `true`，即不加暂停）下发；Jackett 模式则固定 `skip_hash_check=false, paused=true`，由 qBittorrent 自行 recheck 确认文件匹配后做种
 
 ### 双模式辅种
 
@@ -606,11 +615,21 @@ POST https://example.com/api/pieces-hash
 
 ## 依赖
 
+与 `requirements.txt` 保持一致：
+
 ```
-aiohttp>=3.8
-PyYAML>=6.0
+aiohttp>=3.9.0
 aiosqlite>=0.20.0
+pycryptodome>=3.20.0
+pyyaml>=6.0
+qbittorrent-api>=2026.8.1
+transmission-rpc>=7.0.0
+yarl>=1.9.0
 ```
+
+> **`qbittorrent-api` 的版本下限是有意的**：qBittorrent 5.3.0（WebAPI v2.16）把 `torrents/add` 的
+> `skip_checking` 改名为 `seedMode`，且服务端对不认识的参数**静默忽略**。2026.8.1 起该库同时发送新旧
+> 两个名字；用更早的版本，`skip_hash_check` 会在 5.3.0 上悄悄失效（种子照加，但会老老实实重头校验）。
 
 > **可选依赖**：使用 Transmission 作为下载器时需额外安装：
 >

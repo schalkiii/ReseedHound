@@ -15,6 +15,11 @@ from .parser import TorrentParser
 
 logger = logging.getLogger("seedhound")
 
+# 已停止但内容已在本地校验完成的状态名。
+# qBittorrent 5.x 把 pausedUP 改名为 stoppedUP，只判旧名会让"自动开始"永不触发；
+# completed 是 Transmission 侧的状态取值。
+STOPPED_COMPLETE_STATES = ("pausedUP", "stoppedUP", "completed")
+
 
 @dataclass
 class ReseedStats:
@@ -666,10 +671,7 @@ class ReseedEngine:
                             qb_info_hashes.add(new_info_hash)
                             await asyncio.sleep(0.3)
                             ti = await self._downloader.get_torrent_info(new_info_hash)
-                            if ti and ti.get("state") in (
-                                "pausedUP",
-                                "completed",
-                            ):
+                            if ti and ti.get("state") in STOPPED_COMPLETE_STATES:
                                 await self._downloader.resume_torrent(new_info_hash)
                                 logger.info(
                                     "自动开始: %s (%s, 已完成)",

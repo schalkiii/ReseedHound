@@ -20,3 +20,8 @@ config.yaml
 sites.yaml
 sites.bak.yaml
 sites.backup.yaml
+*.bak
+
+# 其他 Agent / 工具在本地产出的目录，不入库
+.workbuddy/
+.uploads/
