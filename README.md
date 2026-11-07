@@ -552,6 +552,10 @@ SeedHound 在辅种流水线的不同阶段部署了三层过滤，逐层拦截�
 会把 5.2/5.3 上的每次成功添加都记成失败；更关键的是「自动开始」只在添加成功分支里执行，这批种子会长期
 停在暂停态不做种。见 `QbittorrentDownloader._is_add_success`。
 
+此外 `is_paused=False` 会被底层库折叠成「不发送该参数」，qB 便按全局 `add_stopped_enabled` 把种子加成
+`stoppedUP`。因此添加后还有 `_ensure_started` 兜底：轮询确认状态，仍停在停止态就补一次 `resume`。
+`auto_start=false` 时不执行该补偿，种子保持暂停。
+
 ```
 ┌────────────┐    ┌─────────────┐    ┌──────────────┐
 │  Parser    │    │  Seeder     │    │  Downloader  │

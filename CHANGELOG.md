@@ -3,6 +3,13 @@
 ## 2026-11-07 — qBittorrent 5.3.0 兼容性修复
 
 ### 修复
+- **辅种种加进去后一直不做种**：`qbittorrent-api` 会把 `is_paused=False` 折叠成「不发送该参数」
+  （合并逻辑是 `is_paused or is_stopped`），qB 于是按全局 `add_stopped_enabled` 把种子加成 `stoppedUP`。
+  现在两个参数一起传，并新增 `_ensure_started` 兜底：添加后轮询确认，仍停在停止态就补一次 `resume`
+  （2026-11-07 实测一轮：匹配 123、成功 8，8 个种子初始全部 `stoppedUP`，补 resume 后全部转为 `stalledUP`）
+- **`auto_start=false` 实际无效**：原逻辑在添加成功后无条件 `resume`，绕过了该开关；现在仅在 `auto_start=true` 时执行
+- **报告打印在 GBK/重定向环境崩溃**：报告含 emoji，`print(report)` 抛 `UnicodeEncodeError`
+  并连带跳过飞书推送。`setup_logger` 现在把 stdout/stderr 重配置为 UTF-8（不可编码字符降级）
 - **添加结果判定不再只认 `"Ok."`**：WebAPI v2.14.0（qB 5.2）起 `torrents/add` 返回 JSON 计数
   （`success_count` / `failure_count` / `pending_count`），旧判定把 5.2/5.3 上每一次成功添加都记成失败，
   且静默无日志。后果链是：`succeeded_count` 恒为 0；本轮不写辅种记录；尤其是「自动开始」只在添加成功分支里执行，

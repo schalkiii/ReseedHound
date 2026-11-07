@@ -48,6 +48,11 @@ Python 3.13 + asyncio；`qbittorrent-api` / `transmission-rpc` 操作下载器�
   HTTP 依然成功但校验照做。靠 `qbittorrent-api>=2026.8.1` 双写新旧名字，不要降版本或自己拼 HTTP。
 - **`pausedUP` 在 5.x 改名 `stoppedUP`**（`paused`→`stopped` 同一波改名）；状态判断要用
   `STOPPED_COMPLETE_STATES`，不要写死旧名。
+- **`is_paused=False` 传不出去**：qbittorrent-api 用 `is_paused or is_stopped` 合并这两个参数，
+  单独传 `is_paused=False` 会变成 None（参数直接不发送），qB 按全局 `add_stopped_enabled` 把种子加成
+  `stoppedUP`。要显式启动必须两个都传（见 `QbittorrentDownloader.add_torrent`），`_ensure_started` 再兜一层。
+- **`print` 含 emoji 必须先 reconfigure**：Windows 控制台 GBK、或 stdout 被重定向时都会抛
+  `UnicodeEncodeError`，还会让报告之后的飞书推送被整段跳过。`setup_logger` 已统一把 stdout/stderr 设为 UTF-8。
 - **服务端对不认识的参数不报错**：任何「调了没反应」先去看 WebAPI 版本号，别怀疑业务逻辑。
 - **凭据不写进代码默认值**：CookieCloud 的 uuid / password 只从 `config.yaml` 的 `cookiecloud` 块读。
   历史上的 argparse 默认值已随公开仓库泄露，删代码回收不了，只能在 CookieCloud 侧轮换。
