@@ -7,6 +7,8 @@ from typing import Optional
 import aiohttp
 from yarl import URL
 
+from ..storage.config import DEFAULTS
+
 logger = logging.getLogger("seedhound")
 
 DEAD_TORRENT_PATTERNS = [
@@ -56,25 +58,23 @@ def _detect_html_reason(data: bytes) -> Optional[str]:
     return None
 
 
+# 「(\d+)\s*分钟后」已覆盖「分钟后重试 / 分钟后可下载」等更长文案，
+# 保留更短的通配式即可，避免子集规则永远排不上用场。
 RATE_LIMIT_HINT_PATTERNS = [
     (re.compile(r"(\d+)\s*分钟后"), "minutes"),
-    (re.compile(r"(\d+)\s*分钟后重试"), "minutes"),
-    (re.compile(r"(\d+)\s*分钟后可下载"), "minutes"),
     (re.compile(r"(\d+)\s*秒后"), "seconds"),
     (re.compile(r"wait\s+(\d+)\s+minute", re.IGNORECASE), "minutes"),
     (re.compile(r"try\s+again\s+in\s+(\d+)\s+second", re.IGNORECASE), "seconds"),
     (re.compile(r"retry\s+after\s+(\d+)\s+second", re.IGNORECASE), "seconds"),
 ]
 
+# 关键词同样按「最短可匹配」收敛：含「频繁」的文案已覆盖「过于频繁」「请求过于频繁」，
+# 含「rate limit」的文案已覆盖「rate limit reached」。
 RATE_LIMIT_KEYWORDS = [
-    "过于频繁",
     "频繁",
     "rate limit",
     "too many",
     "请稍后",
-    "过于频繁",
-    "rate limit reached",
-    "请求过于频繁",
     "请稍候",
 ]
 
@@ -97,8 +97,8 @@ def _parse_rate_limit_response(data: bytes, content_type: str) -> Optional[float
                         )
                         return max(delay, 10.0)
                 return 60.0
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("解析限流响应失败: %s", exc)
     return None
 
 
@@ -123,21 +123,22 @@ def _is_likely_text_error(data: bytes, content_type: str) -> Optional[float]:
                         return max(delay, 10.0)
                 return 60.0
         return None
-    except Exception:
+    except Exception as exc:
+        logger.debug("解析文本错误响应失败: %s", exc)
         return None
 
 
 class SiteClient:
     def __init__(
         self,
-        concurrency: int = 20,
-        timeout: float = 15.0,
-        download_timeout: float = 30.0,
-        retry_count: int = 2,
-        retry_delay: float = 2.0,
+        concurrency: int = DEFAULTS["global"]["concurrency"],
+        timeout: float = DEFAULTS["global"]["api_timeout"],
+        download_timeout: float = DEFAULTS["global"]["download_timeout"],
+        retry_count: int = DEFAULTS["global"]["retry_count"],
+        retry_delay: float = DEFAULTS["global"]["retry_delay"],
         dead_cache: Optional[DeadTorrentCache] = None,
         site_cookies: Optional[dict[str, str]] = None,
-        download_interval: float = 5.0,
+        download_interval: float = DEFAULTS["global"]["download_interval"],
         host_intervals: Optional[dict[str, float]] = None,
     ):
         self._concurrency = concurrency
@@ -364,7 +365,12 @@ class SiteClient:
                             return await resp.json()
                         if resp.status == 429:
                             retry_after = resp.headers.get("Retry-After", "5")
-                            await asyncio.sleep(float(retry_after))
+                            # Retry-After 也可能是 HTTP-date，无法直接转 float
+                            try:
+                                delay = float(retry_after)
+                            except (TypeError, ValueError):
+                                delay = 5.0
+                            await asyncio.sleep(delay)
                             continue
                         last_error = f"HTTP {resp.status}"
                         logger.debug(
@@ -445,6 +451,15 @@ class SiteClient:
                             total_batches,
                         )
                     return
+                if not isinstance(response, dict):
+                    logger.warning(
+                        "站点 %s 返回非预期的响应类型 %s，本批次记为失败",
+                        site_name,
+                        type(response).__name__,
+                    )
+                    batch_failed[0] += 1
+                    consecutive_failures[0] += 1
+                    return
                 batch_succeeded[0] += 1
                 consecutive_failures[0] = 0
                 if isinstance(response.get("data"), dict):
@@ -457,7 +472,14 @@ class SiteClient:
                             pass
 
         tasks = [query_one(batch) for batch in pieces_batches]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+        for failure in batch_results:
+            if isinstance(failure, Exception):
+                logger.warning("站点 %s 批次查询异常: %s", site_name, failure)
+                batch_failed[0] += 1
+                consecutive_failures[0] += 1
+                if consecutive_failures[0] >= max_consecutive_failures:
+                    site_dead.set()
 
         if batch_failed[0] > 0:
             logger.warning(

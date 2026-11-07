@@ -2,7 +2,10 @@ import logging
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 
+# 一轮辅种在日志中的起始标志。日志裁剪与周报清理共用此常量，
+# 修改日志文案时只需改这一处。
 RUN_MARKER = "SeedHound 辅种引擎启动"
 
 # 下载链接形如 .../download.php?id=1&passkey=xxxx，passkey 等同于账号权限
@@ -46,11 +49,20 @@ def trim_log_file(log_path: str, keep_runs: int = 3):
         keep_from = run_starts[-keep_runs]
         trimmed = "".join(lines[keep_from:])
         log_file.write_text(trimmed, encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as exc:
+        logging.getLogger("seedhound").debug("日志裁剪失败: %s", exc)
 
 
-def setup_logger(level: str = "INFO", log_file: str = "logs/seedhound.log") -> logging.Logger:
+def setup_logger(
+    level: Optional[str] = None, log_file: Optional[str] = None
+) -> logging.Logger:
+    # logger 是最底层模块，不在顶层导入 storage.config 以免形成跨层依赖；
+    # 缺省值仍从 DEFAULTS 单一来源取得。
+    from ..storage.config import DEFAULTS
+
+    level = level or DEFAULTS["log"]["level"]
+    log_file = DEFAULTS["log"]["file"] if log_file is None else log_file
+
     # Windows 控制台默认 GBK，报告里的 emoji（🟢🔴）会让 print 抛 UnicodeEncodeError，
     # 连带跳过飞书推送；stdout 重定向到文件时同样如此。统一按 UTF-8 输出，不可编码字符降级。
     for stream in (sys.stdout, sys.stderr):
@@ -59,6 +71,11 @@ def setup_logger(level: str = "INFO", log_file: str = "logs/seedhound.log") -> l
 
     logger = logging.getLogger("seedhound")
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+
+    # 同步 Cookie 与辅种共用同一 logger；重复初始化时先卸掉旧 handler，避免日志重复输出
+    for existing in list(logger.handlers):
+        logger.removeHandler(existing)
+        existing.close()
 
     formatter = logging.Formatter(
         fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

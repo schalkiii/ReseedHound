@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from ..engine.seeder import ReseedStats
+from .site_table import build_site_rows, failed_sites_display
 
 
 def _display_width(s: str) -> int:
@@ -26,14 +27,6 @@ def _pad_str(s: str, width: int, align: str = '<') -> str:
         return ' ' * left + s + ' ' * right
     else:
         return s + ' ' * padding
-
-
-def _site_status(ok: int, fail: int) -> str:
-    if ok > 0:
-        return '🟢'
-    if fail > 0:
-        return '🔴'
-    return '⚪'
 
 
 class ReportGenerator:
@@ -80,22 +73,9 @@ class ReportGenerator:
 
         lines.append(f"[ 站点匹配 ]  共匹配 {stats.matched_count} 个种子可跨站辅种")
 
-        site_match = stats.site_match_counts or {}
-        site_ok = stats.site_succeeded or {}
-        site_fail = stats.site_failed or {}
-
-        all_sites = set(site_match.keys()) | set(site_ok.keys()) | set(site_fail.keys())
-        if all_sites:
-            rows = []
-            for name in all_sites:
-                m = site_match.get(name, 0)
-                ok = site_ok.get(name, 0)
-                fail = site_fail.get(name, 0)
-                if m or ok or fail:
-                    rows.append((name, m, ok, fail))
-            rows.sort(key=lambda x: x[1], reverse=True)
-
-            name_width = max((_display_width(r[0]) for r in rows), default=14)
+        rows = build_site_rows(stats)
+        if rows:
+            name_width = max((_display_width(r.name) for r in rows), default=14)
             name_width = max(name_width, 14)
 
             status_col = '状态'
@@ -116,23 +96,22 @@ class ReportGenerator:
             )
             lines.append(sep_cols)
 
-            for name, m, ok, fail in rows:
-                status = _site_status(ok, fail)
-                status_col_content = _pad_str(status, 6, '^')
-                site_col_content = _pad_str(name, name_width + 2, '^')
+            for row in rows:
+                status_col_content = _pad_str(row.status_icon, 6, '^')
+                site_col_content = _pad_str(row.name, name_width + 2, '^')
                 row_line = (f'  | {status_col_content}'
                             f' | {site_col_content}'
-                            f' | {_pad_str(str(m), 8, ">")}'
-                            f' | {_pad_str(str(ok), 8, ">")}'
-                            f' | {_pad_str(str(fail), 8, ">")} |')
+                            f' | {_pad_str(str(row.matched), 8, ">")}'
+                            f' | {_pad_str(str(row.succeeded), 8, ">")}'
+                            f' | {_pad_str(str(row.failed), 8, ">")} |')
                 lines.append(row_line)
         else:
             lines.append("  (无站点返回匹配数据)")
         lines.append("")
 
-        dead = stats.failed_sites
-        if dead:
-            lines.append(f"  ⚠️ 无匹配站点 ({len(dead)} 个): {', '.join(dead)}")
+        dead_count, dead_text = failed_sites_display(stats)
+        if dead_count:
+            lines.append(f"  ⚠️ 无匹配站点 ({dead_count} 个): {dead_text}")
             lines.append("")
 
         total_sites = len(stats.site_details)
@@ -160,24 +139,14 @@ class ReportGenerator:
 
         lines.append(f"**站点匹配** （共 {stats.matched_count} 个种子可辅种）")
 
-        site_match = stats.site_match_counts or {}
-        site_ok = stats.site_succeeded or {}
-        site_fail = stats.site_failed or {}
-
-        all_sites = set(site_match.keys()) | set(site_ok.keys()) | set(site_fail.keys())
-        if all_sites:
-            rows = []
-            for name in all_sites:
-                m = site_match.get(name, 0)
-                ok = site_ok.get(name, 0)
-                fail = site_fail.get(name, 0)
-                if m or ok or fail:
-                    rows.append((name, m, ok, fail))
-            rows.sort(key=lambda x: x[1], reverse=True)
+        rows = build_site_rows(stats)
+        if rows:
             lines.append("| 站点 | 匹配 | 成功 | 失败 |")
             lines.append("|---|---:|---:|---:|")
-            for name, m, ok, fail in rows:
-                lines.append(f"| {name} | {m} | {ok} | {fail} |")
+            for row in rows:
+                lines.append(
+                    f"| {row.name} | {row.matched} | {row.succeeded} | {row.failed} |"
+                )
         lines.append("")
 
         lines.append("**辅种结果**")

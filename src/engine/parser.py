@@ -73,7 +73,8 @@ class TorrentParser:
                     result["announce_list"] = urls
 
             return result
-        except Exception:
+        except Exception as exc:
+            logger.debug("解析种子数据失败 %s: %s", file_name or "<bytes>", exc)
             return None
 
     @staticmethod

@@ -39,12 +39,6 @@ class DownloaderBase(ABC):
     async def get_all_info_hashes(self) -> set[str]:
         ...
 
-    @abstractmethod
-    async def add_trackers_to_torrent(
-        self, info_hash: str, urls: list[str],
-    ) -> bool:
-        ...
-
 
 class QbittorrentDownloader(DownloaderBase):
     def __init__(self, host: str, port: int, username: str, password: str):
@@ -63,7 +57,7 @@ class QbittorrentDownloader(DownloaderBase):
                 username=self._username,
                 password=self._password,
             )
-            await asyncio.get_event_loop().run_in_executor(
+            await asyncio.get_running_loop().run_in_executor(
                 None, self._client.auth_log_in,
             )
             logger.info("qBittorrent 连接成功")
@@ -74,7 +68,7 @@ class QbittorrentDownloader(DownloaderBase):
 
     async def get_torrent_info(self, info_hash: str) -> Optional[dict]:
         try:
-            torrents = await asyncio.get_event_loop().run_in_executor(
+            torrents = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: self._client.torrents_info(torrent_hashes=info_hash),
             )
@@ -105,7 +99,13 @@ class QbittorrentDownloader(DownloaderBase):
             return result in ("Ok.", "")
         if isinstance(result, dict):
             return bool(result.get("success_count") or result.get("pending_count"))
-        return True
+        if result is None:
+            # 部分版本在成功时返回空响应体，库将其解析为 None
+            return True
+        logger.warning(
+            "无法识别的 torrents/add 返回类型 %s: %r", type(result).__name__, result
+        )
+        return False
 
     async def add_torrent(
         self,
@@ -132,7 +132,7 @@ class QbittorrentDownloader(DownloaderBase):
                 kwargs["torrent_files"] = torrent_files
             if tag:
                 kwargs["tags"] = tag
-            result = await asyncio.get_event_loop().run_in_executor(
+            result = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: self._client.torrents_add(**kwargs),
             )
@@ -147,7 +147,7 @@ class QbittorrentDownloader(DownloaderBase):
 
     async def resume_torrent(self, info_hash: str) -> bool:
         try:
-            await asyncio.get_event_loop().run_in_executor(
+            await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: self._client.torrents_resume(torrent_hashes=info_hash),
             )
@@ -164,7 +164,7 @@ class QbittorrentDownloader(DownloaderBase):
                 username=self._username,
                 password=self._password,
             )
-            await asyncio.get_event_loop().run_in_executor(
+            await asyncio.get_running_loop().run_in_executor(
                 None, self._client.auth_log_in,
             )
             logger.info("qBittorrent 重连成功")
@@ -175,7 +175,7 @@ class QbittorrentDownloader(DownloaderBase):
 
     async def get_all_info_hashes(self) -> set[str]:
         try:
-            torrents = await asyncio.get_event_loop().run_in_executor(
+            torrents = await asyncio.get_running_loop().run_in_executor(
                 None,
                 self._client.torrents_info,
             )
@@ -184,7 +184,7 @@ class QbittorrentDownloader(DownloaderBase):
             logger.warning("获取qB种子列表失败: %s, 重新登录重试...", e)
             if await self._reconnect():
                 try:
-                    torrents = await asyncio.get_event_loop().run_in_executor(
+                    torrents = await asyncio.get_running_loop().run_in_executor(
                         None,
                         self._client.torrents_info,
                     )
@@ -192,22 +192,6 @@ class QbittorrentDownloader(DownloaderBase):
                 except Exception as e2:
                     logger.error("获取qB种子列表重试失败: %s", e2)
             return set()
-
-    async def add_trackers_to_torrent(
-        self, info_hash: str, urls: list[str],
-    ) -> bool:
-        try:
-            await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self._client.torrents_add_trackers(
-                    torrent_hash=info_hash, urls=urls,
-                ),
-            )
-            logger.debug("已添加tracker到 %s: %s", info_hash, urls)
-            return True
-        except Exception as e:
-            logger.debug("添加tracker失败 %s: %s", info_hash, e)
-            return False
 
     async def close(self):
         if self._client:
@@ -245,20 +229,33 @@ class TransmissionDownloader(DownloaderBase):
                 "state": torrent.status,
                 "name": torrent.name,
             }
-        except Exception:
+        except Exception as e:
+            logger.debug("查询 Transmission 种子信息失败 %s: %s", info_hash, e)
             return None
 
     async def add_torrent(
         self,
-        download_url: str,
-        save_path: str,
+        download_url: Optional[str] = None,
+        torrent_files: Optional[bytes] = None,
+        save_path: str = "",
         skip_hash_check: bool = True,
         paused: bool = True,
         tag: str = "",
     ) -> bool:
+        # Transmission WebAPI 没有 skip_checking / tags 的等价参数，这里显式忽略，
+        # 避免调用方误以为这两个开关在 Transmission 上生效。
+        logger.debug(
+            "Transmission 忽略不受支持的参数: skip_hash_check=%s, tag=%s",
+            skip_hash_check,
+            tag,
+        )
+        payload = torrent_files if torrent_files else download_url
+        if not payload:
+            logger.error("Transmission 添加种子失败: 未提供 torrent 数据或下载链接")
+            return False
         try:
             self._client.add_torrent(
-                torrent=download_url,
+                torrent=payload,
                 download_dir=save_path,
                 paused=paused,
             )
@@ -283,21 +280,21 @@ class TransmissionDownloader(DownloaderBase):
             logger.error("获取Tr种子列表失败: %s", e)
             return set()
 
-    async def add_trackers_to_torrent(
-        self, info_hash: str, urls: list[str],
-    ) -> bool:
-        return False
-
     async def close(self):
         self._client = None
 
 
 def create_downloader(config: dict) -> DownloaderBase:
     dl_type = config.get("type", "qbittorrent")
+    if "host" not in config:
+        raise ValueError(
+            "下载器配置缺少 host：请检查 config.yaml 的 downloader 块"
+            "（双下载器模式需分别填写 source.host 与 destination.host）"
+        )
     host = config["host"]
     port = int(config.get("port", 8080))
     username = config.get("username", "admin")
-    password = config.get("password", "adminadmin")
+    password = config.get("password", "")
 
     if dl_type == "qbittorrent":
         return QbittorrentDownloader(host, port, username, password)

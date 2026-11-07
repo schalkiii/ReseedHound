@@ -1,3 +1,16 @@
 [flake8]
 max-line-length = 120
 extend-ignore = E203, W503, W391
+exclude =
+    .git,
+    __pycache__,
+    .pytest_cache,
+    .venv,
+    venv,
+    build,
+    dist,
+    data,
+    logs
+per-file-ignores =
+    tests/*.py:E402
+    scripts/*.py:E402

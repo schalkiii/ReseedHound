@@ -74,40 +74,48 @@ class ReseedEngine:
                     host_intervals[host] = float(site_interval)
 
         self._client = SiteClient(
-            concurrency=config.global_config.get("concurrency", 20),
-            timeout=config.global_config.get("api_timeout", 10),
-            download_timeout=config.global_config.get("download_timeout", 30),
-            retry_count=config.global_config.get("retry_count", 2),
-            retry_delay=config.global_config.get("retry_delay", 2.0),
-            download_interval=config.global_config.get("download_interval", 5.0),
+            concurrency=config.value("global", "concurrency"),
+            timeout=config.value("global", "api_timeout"),
+            download_timeout=config.value("global", "download_timeout"),
+            retry_count=config.value("global", "retry_count"),
+            retry_delay=config.value("global", "retry_delay"),
+            download_interval=config.value("global", "download_interval"),
             host_intervals=host_intervals,
             dead_cache=self._dead_cache,
             site_cookies=site_cookies,
         )
         self._downloader: Optional[DownloaderBase] = None
         self._src_downloader: Optional[DownloaderBase] = None
-        self._batch_size = config.global_config.get("batch_size", 100)
+        self._batch_size = config.value("global", "batch_size")
         self._stats = ReseedStats()
 
-        self._jackett: Optional[JackettClient] = None
-        self._use_jackett = config.jackett_enabled
+        # 运行模式由 global.mode / --mode 决定；jackett.enabled 只控制 Jackett 客户端是否可用，
+        # 不再反过来把模式静默降级成 pieces_hash。
         mode = config.operation_mode
-        if self._use_jackett:
-            jc = config.jackett_config
+        if mode in ("jackett", "both") and not config.jackett_enabled:
+            logger.warning(
+                "运行模式 %s 需要 jackett.enabled=true，当前未启用，回退为 pieces_hash",
+                mode,
+            )
+            mode = "pieces_hash"
+
+        self._jackett: Optional[JackettClient] = None
+        if mode in ("jackett", "both"):
+            # retry_count / retry_delay 允许不写，此时继承 global 的同名缺省值
             self._jackett = JackettClient(
                 base_url=config.jackett_url,
                 api_key=config.jackett_api_key,
-                timeout=jc.get("timeout", 30),
-                concurrency=jc.get("concurrency", 5),
-                retry_count=jc.get(
-                    "retry_count", config.global_config.get("retry_count", 2)
+                timeout=config.value("jackett", "timeout"),
+                concurrency=config.value("jackett", "concurrency"),
+                retry_count=config.value(
+                    "jackett", "retry_count", config.value("global", "retry_count")
                 ),
-                retry_delay=jc.get(
-                    "retry_delay", config.global_config.get("retry_delay", 2.0)
+                retry_delay=config.value(
+                    "jackett", "retry_delay", config.value("global", "retry_delay")
                 ),
-                search_interval=jc.get("search_interval", 1.0),
+                search_interval=config.value("jackett", "search_interval"),
             )
-        self._mode = mode if self._use_jackett else "pieces_hash"
+        self._mode = mode
 
     async def start(self):
         await self._cache.init()
@@ -121,7 +129,8 @@ class ReseedEngine:
             if not await self._jackett.test_connection():
                 logger.warning("Jackett 连接失败，将仅使用 pieces_hash 模式")
                 self._mode = "pieces_hash"
-        dl_config = self._config.downloader_config
+        # 双下载器模式下主下载器必须是 destination；source 只提供种子库。
+        dl_config = self._config.destination_downloader_config
         self._downloader = create_downloader(dl_config)
         if not await self._downloader.connect():
             raise RuntimeError("下载器连接失败")
@@ -223,7 +232,11 @@ class ReseedEngine:
 
     async def _phase_scan(self):
         logger.info("[阶段1] 扫描本地种子文件...")
-        torrent_dir = self._config.source_downloader_config.get("torrent_dir", "")
+        torrent_dir = self._config.downloader_value("torrent_dir", role="source")
+        if not torrent_dir:
+            raise ValueError(
+                "downloader.torrent_dir 未配置：请在 config.yaml 中填写种子文件目录"
+            )
         torrents = await TorrentParser.scan_directory(torrent_dir)
         self._stats.total_torrents = len(torrents)
 
@@ -262,7 +275,7 @@ class ReseedEngine:
         qb_info_hashes = await self._downloader.get_all_info_hashes()
         logger.info("qB 中现有种子: %d 个", len(qb_info_hashes))
 
-        torrent_tag = self._config.destination_downloader_config.get("tag", "SeedHound")
+        torrent_tag = self._config.downloader_value("tag")
 
         total = len(self._torrents)
         searched = 0
@@ -433,7 +446,7 @@ class ReseedEngine:
                 total_skipped,
             )
 
-        site_sem = asyncio.Semaphore(self._config.global_config.get("concurrency", 20))
+        site_sem = asyncio.Semaphore(self._config.value("global", "concurrency"))
 
         async def query_one_site(site: dict):
             async with site_sem:
@@ -461,11 +474,14 @@ class ReseedEngine:
         self._pieces_hash_index = {t["pieces_hash"]: t for t in self._torrents}
         self._match_map: dict[str, list[tuple[str, int, str]]] = {}
 
-        for result in site_results:
+        for site, result in zip(sites, site_results):
             if isinstance(result, Exception):
-                logger.error("站点查询异常: %s", result)
+                site_name = site.get("name", "?")
+                logger.error("站点 %s 查询异常: %s", site_name, result)
+                self._stats.failed_sites.append(site_name)
+                self._stats.site_details[site_name] = 0
                 continue
-            site, matches = result
+            _site, matches = result
             if not matches:
                 continue
             for pieces_hash, torrent_id in matches:
@@ -561,15 +577,9 @@ class ReseedEngine:
                     )
                     return
 
-                skip_hash = self._config.destination_downloader_config.get(
-                    "skip_hash_check", True
-                )
-                auto_start = self._config.destination_downloader_config.get(
-                    "auto_start", True
-                )
-                torrent_tag = self._config.destination_downloader_config.get(
-                    "tag", "SeedHound"
-                )
+                skip_hash = self._config.downloader_value("skip_hash_check")
+                auto_start = self._config.downloader_value("auto_start")
+                torrent_tag = self._config.downloader_value("tag")
 
                 piece_failed = 0
                 piece_failed_by_site: dict[str, int] = {}
@@ -710,7 +720,11 @@ class ReseedEngine:
                         )
 
         tasks = [add_one(ph, matches) for ph, matches in self._match_map.items()]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        add_results = await asyncio.gather(*tasks, return_exceptions=True)
+        for failure in add_results:
+            if isinstance(failure, Exception):
+                self._stats.failed_count += 1
+                logger.error("添加种子任务异常: %s", failure)
 
         if self._stats.tracker_skip_count:
             logger.info(

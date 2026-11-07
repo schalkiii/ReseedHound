@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
@@ -26,7 +26,11 @@ try:
 except ImportError:
     yaml = None
 
-LOG_MARKER = "SeedHound 辅种引擎启动"
+# 轮次标志只维护一份：与日志裁剪（src/utils/logger.py）共用 RUN_MARKER，
+# 日志启动文案变更时周报清理不会静默失真。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.utils.logger import RUN_MARKER
+
 TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 URL_HOST_RE = re.compile(r"https?://([^/]+)/")
 RUN_SUMMARY_RE = re.compile(
@@ -201,7 +205,7 @@ def cleanup_log(log_path: str, keep_days: int, keep_runs: int, apply: bool) -> s
     """清理远期日志：保留最近 keep_days 天，且至少保留 keep_runs 轮。"""
     p = Path(log_path)
     lines = p.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
-    run_starts = [i for i, ln in enumerate(lines) if LOG_MARKER in ln]
+    run_starts = [i for i, ln in enumerate(lines) if RUN_MARKER in ln]
 
     # 按天数截止
     cutoff_dt = None
@@ -254,9 +258,12 @@ def main():
         return 1
 
     host_map = load_site_host_map(args.sites)
-    # 以日志中最新时间戳为参考终点
+    # 以日志中最新时间戳为参考终点。只保留文件尾部有限行数，
+    # 避免把动辄数百 MB 的历史日志一次性载入内存。
     latest = None
-    for ln in reversed(open(log_path, encoding="utf-8", errors="replace").readlines()):
+    with open(log_path, encoding="utf-8", errors="replace") as f:
+        tail = deque(f, maxlen=2000)
+    for ln in reversed(tail):
         latest = parse_dt(ln)
         if latest:
             break

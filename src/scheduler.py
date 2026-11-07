@@ -2,11 +2,9 @@ import asyncio
 import logging
 import signal
 
-from .engine.seeder import ReseedEngine
-from .notify.feishu import FeishuNotifier
-from .report.generator import ReportGenerator
-from .storage.config import Config
 from .cookie_sync import sync_cookies
+from .runner import run_once
+from .storage.config import Config
 
 logger = logging.getLogger("seedhound.scheduler")
 
@@ -42,7 +40,7 @@ class ReseedScheduler:
             self._stop_event.set()
 
     async def _sync_cookies(self):
-        """运行前从 CookieCloud 同步站点 Cookie（受 config 的 cookiecloud.enable 控制）。
+        """运行前从 CookieCloud 同步站点 Cookie（受 config 的 cookiecloud.enabled 控制）。
 
         同步失败时仅告警并继续本轮，避免 CookieCloud 不可达导致整轮辅种失败。
         """
@@ -54,7 +52,7 @@ class ReseedScheduler:
                 logger.warning("CookieCloud 未配置 uuid/password，跳过本轮 Cookie 同步")
                 return
             result = await sync_cookies(
-                url=cc.get("url", "http://127.0.0.1:8082/cookie"),
+                url=self._config.value("cookiecloud", "url"),
                 uuid=uuid,
                 password=password,
                 sites_path=self._config.sites_path,
@@ -68,29 +66,15 @@ class ReseedScheduler:
         except Exception as exc:
             logger.warning("CookieCloud 同步异常(本轮使用已有 Cookie): %s", exc)
 
-    async def _run_once(self):
-        """执行单轮辅种（与一次性运行完全一致的代码路径）。"""
+    async def _run_once(self) -> int:
+        """执行单轮辅种（与一次性运行共用 run_once 实现）。
+
+        CookieCloud 同步是定时模式特有的前置步骤：写回 sites.yaml 后
+        reload_sites()，随后的 run_once 自然使用最新 Cookie。
+        """
         if self._config.cookiecloud_enabled:
             await self._sync_cookies()
-        engine = ReseedEngine(self._config)
-        try:
-            await engine.start()
-            stats = await engine.run(
-                dry_run=self._args.dry_run, site_name=self._args.site
-            )
-
-            generator = ReportGenerator()
-            report = generator.generate(stats)
-            print()
-            print(report)
-
-            if not self._args.no_feishu:
-                feishu = FeishuNotifier.from_config(self._config.feishu_config)
-                if feishu:
-                    logger.info("推送报告到飞书...")
-                    await feishu.send_report_card(stats)
-        finally:
-            await engine.close()
+        return await run_once(self._config, self._args)
 
     async def run(self) -> int:
         interval = self._config.scheduler_interval_seconds
@@ -104,19 +88,31 @@ class ReseedScheduler:
             run_on_start,
         )
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         self._install_signal_handlers(loop)
 
         if startup_delay > 0:
             logger.info("等待启动延迟 %.0f 秒...", startup_delay)
-            if not await self._wait_with_stop(startup_delay):
+            # _wait_with_stop 返回 True 表示等待期间收到了退出信号
+            if await self._wait_with_stop(startup_delay):
+                logger.info("定时调度器在启动延迟期间收到退出信号（共执行 0 轮）")
+                return 0
+
+        if not run_on_start:
+            logger.info(
+                "run_on_start=false，先等待 %.0f 分钟后执行首轮...", interval / 60
+            )
+            if await self._wait_with_stop(interval):
+                logger.info("定时调度器在首轮等待期间收到退出信号（共执行 0 轮）")
                 return 0
 
         while not self._stop_event.is_set():
             self._cycle += 1
             logger.info("===== 第 %d 轮定时辅种开始 =====", self._cycle)
             try:
-                await self._run_once()
+                result = await self._run_once()
+                if result != 0:
+                    logger.warning("第 %d 轮辅种返回非零状态，继续下一轮", self._cycle)
             except Exception as exc:
                 logger.error("本轮辅种异常: %s", exc, exc_info=True)
 

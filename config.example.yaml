@@ -1,14 +1,24 @@
 # SeedHound 配置模板
 # 复制此文件为 config.yaml 并填入实际值
+#
+# 所有可缺省字段的默认值集中定义在 src/storage/config.py 的 DEFAULTS，
+# 本模板列出的取值与 DEFAULTS 保持一致；未识别的字段会在启动时告警。
 
 global:
+  # 站点查询/添加的最大并发数
   concurrency: 20
+  # 单次站点 API 请求携带的 pieces_hash 条数
   batch_size: 100
+  # 站点 API 请求超时（秒）
   api_timeout: 60
+  # 种子文件下载超时（秒）
   download_timeout: 15
+  # 同一域名两次下载之间的最小间隔（秒），站点可用 download_interval 覆盖
   download_interval: 5.0
+  # 下载失败后重试次数与递增等待基数（秒）
   retry_count: 2
   retry_delay: 2.0
+  # 辅种模式：pieces_hash（站点 API，默认）/ jackett / both
   mode: pieces_hash
 
 db:
@@ -30,6 +40,8 @@ scheduler:
   run_on_start: true
 
 # === 下载器配置 ===
+# 必填：type / host / port / username / password / torrent_dir（种子文件目录）
+# 可选行为开关的缺省值见 DEFAULTS：skip_hash_check=true、auto_start=true、tag=SeedHound
 # 单下载器模式（默认）：
 downloader:
   type: qbittorrent
@@ -43,6 +55,7 @@ downloader:
   tag: SeedHound
 
 # 双下载器模式（跨下载器辅种）：
+# 主下载器取 destination（实际添加种子的目标），source 只提供本地种子库。
 # downloader:
 #   source:
 #     type: qbittorrent
@@ -62,8 +75,11 @@ downloader:
 notify:
   feishu:
     webhook_url: ""
+    # 开启飞书机器人签名校验时填写；留空则不发送签名字段
     secret: ""
 
+# enabled=true 且 api_key 非空时 Jackett 客户端才可用。
+# retry_count / retry_delay 可省略，省略时继承 global 的同名值。
 jackett:
   enabled: false
   url: "http://localhost:9117"
@@ -73,11 +89,11 @@ jackett:
   timeout: 30
 
 # === CookieCloud 配置（可选）===
-# enable: true 时，调度器在每轮辅种开始前自动同步站点 Cookie
+# enabled: true 时，调度器在每轮辅种开始前自动同步站点 Cookie
+# 兼容历史写法 enable，两者同时出现时以 enable 为准
 # 凭据只放本地 config.yaml，代码中不保留任何默认值
 cookiecloud:
-  enable: false
+  enabled: false
   url: "http://127.0.0.1:8082/cookie"
   uuid: "your-uuid"
   password: "your-password"
-

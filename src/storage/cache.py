@@ -46,16 +46,25 @@ class TorrentCache:
                 CREATE INDEX IF NOT EXISTS idx_dead_first
                 ON dead_torrents(first_dead_at)
             """)
-            await db.commit()
 
-    async def is_cached(self, pieces_hash: str) -> bool:
-        async with aiosqlite.connect(str(self._db_path)) as db:
+            # 历史库里可能存在同一 (pieces_hash, site_name, torrent_id) 的多条记录。
+            # 首次升级时先去重再建唯一索引；索引已存在时跳过清理，避免每轮启动全表扫描。
             cursor = await db.execute(
-                "SELECT 1 FROM pieces_cache WHERE pieces_hash = ?",
-                (pieces_hash,),
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='index' AND name='uq_reseed_history'"
             )
-            row = await cursor.fetchone()
-            return row is not None
+            if not await cursor.fetchone():
+                await db.execute("""
+                    DELETE FROM reseed_history WHERE id NOT IN (
+                        SELECT MIN(id) FROM reseed_history
+                        GROUP BY pieces_hash, site_name, torrent_id
+                    )
+                """)
+                await db.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_reseed_history
+                    ON reseed_history(pieces_hash, site_name, torrent_id)
+                """)
+            await db.commit()
 
     async def filter_uncached(self, items: list[dict]) -> list[dict]:
         result = []
@@ -85,34 +94,12 @@ class TorrentCache:
                 )
                 await db.commit()
 
-    async def get_reseeded_combos(
-        self, combos: list[tuple[str, str, int]],
-    ) -> set[tuple[str, str, int]]:
-        result = set()
-        if not combos:
-            return result
-        async with aiosqlite.connect(str(self._db_path)) as db:
-            for i in range(0, len(combos), 500):
-                batch = combos[i:i + 500]
-                placeholders = ",".join("(?, ?, ?)" for _ in batch)
-                params = []
-                for ph, sn, tid in batch:
-                    params.extend([ph, sn, tid])
-                cursor = await db.execute(
-                    f"SELECT pieces_hash, site_name, torrent_id FROM reseed_history "
-                    f"WHERE (pieces_hash, site_name, torrent_id) IN ({placeholders})",
-                    params,
-                )
-                rows = await cursor.fetchall()
-                for ph, sn, tid in rows:
-                    result.add((ph, sn, tid))
-        return result
-
     async def add_reseed_record(self, pieces_hash: str, site_name: str, torrent_id: int):
         async with self._lock:
             async with aiosqlite.connect(str(self._db_path)) as db:
+                # 唯一索引保证同一组合只记录一次，重复命中不写库
                 await db.execute(
-                    "INSERT INTO reseed_history"
+                    "INSERT OR IGNORE INTO reseed_history"
                     " (pieces_hash, site_name, torrent_id) VALUES (?, ?, ?)",
                     (pieces_hash, site_name, torrent_id),
                 )

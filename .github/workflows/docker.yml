@@ -42,11 +42,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # latest 仅由 semver tag 通过 flavor=latest=auto 生成；
+          # workflow_dispatch / 普通分支构建只产出分支名标签，不会污染 latest。
+          # 不要改动 IMAGE_NAME：metadata-action 会自动把仓库名小写化。
+          flavor: |
+            latest=auto
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=ref,event=tag
-            type=raw,value=latest
 
       - name: Build and push
         uses: docker/build-push-action@v6

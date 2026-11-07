@@ -5,7 +5,15 @@
 #   登录 PT 站点 → 控制面板 → 密钥/Passkey
 #   或从站点发布的种子下载链接中提取
 #
-# enabled: true/false  是否启用该站点（默认 true），设为 false 可临时跳过
+# 字段说明：
+#   name              站点名称，也用于 --site 指定与报告展示
+#   url               站点主页，用于按 tracker 域名排除同站种子
+#   api_url           pieces_hash 查询接口（POST {"passkey": ..., "pieces_hash": [...]}）
+#   passkey           必填；为空的站点会被直接忽略
+#   enabled           是否启用（默认 true），false 可临时跳过
+#                     兼容历史写法 enable；两者同时出现时以 enable 为准
+#   cookie / cookies  可选，站点 Cookie；同时存在时优先 cookie
+#   download_interval 可选，覆盖 global.download_interval 的每域名下载间隔（秒）
 
 sites:
   - name: example_site
@@ -19,3 +27,4 @@ sites:
     api_url: https://another-pt.site/api/pieces-hash
     passkey: your_passkey_here
     enabled: true
+    download_interval: 10.0

@@ -1,0 +1,6 @@
+# 开发与门禁依赖（生产依赖见 requirements.txt）
+# 安装：pip install -r requirements.txt -r requirements-dev.txt
+# 门禁命令：python -m flake8 src tests run.py && python -m pytest tests/ -q
+pytest>=8.0
+pytest-asyncio>=0.23
+flake8>=6.0

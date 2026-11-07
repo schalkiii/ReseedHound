@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 import aiohttp
 
+from ..storage.config import DEFAULTS
 from ..utils._bencode import bdecode
 from ..utils.hash import compute_pieces_hash
 
@@ -90,11 +91,11 @@ class JackettClient:
         self,
         base_url: str,
         api_key: str,
-        timeout: float = 30.0,
-        concurrency: int = 5,
-        retry_count: int = 2,
-        retry_delay: float = 2.0,
-        search_interval: float = 1.0,
+        timeout: float = DEFAULTS["jackett"]["timeout"],
+        concurrency: int = DEFAULTS["jackett"]["concurrency"],
+        retry_count: int = DEFAULTS["global"]["retry_count"],
+        retry_delay: float = DEFAULTS["global"]["retry_delay"],
+        search_interval: float = DEFAULTS["jackett"]["search_interval"],
     ):
         base = base_url.rstrip("/")
         if not base.endswith("/api/v2.0"):

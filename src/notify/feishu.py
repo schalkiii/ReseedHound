@@ -1,8 +1,14 @@
+import base64
+import hashlib
+import hmac
 import json
 import logging
+import time
 from typing import Optional
 
 import aiohttp
+
+from ..report.site_table import build_site_rows, failed_sites_display
 
 logger = logging.getLogger("seedhound")
 
@@ -12,15 +18,6 @@ class FeishuNotifier:
     def __init__(self, webhook_url: str, secret: Optional[str] = None):
         self._webhook_url = webhook_url
         self._secret = secret
-
-    async def send_text(self, content: str) -> bool:
-        payload = {
-            "msg_type": "text",
-            "content": {
-                "text": content,
-            },
-        }
-        return await self._send(payload)
 
     async def send_report_card(self, stats) -> bool:
         elements = self._build_card_elements(stats)
@@ -66,39 +63,19 @@ class FeishuNotifier:
             ).format(status_icon),
         })
 
-        site_match = stats.site_match_counts or {}
-        site_ok = stats.site_succeeded or {}
-        site_fail = stats.site_failed or {}
-        all_sites = set(site_match.keys()) | set(site_ok.keys()) | set(site_fail.keys())
-
-        if all_sites:
+        rows = build_site_rows(stats)
+        if rows:
             elements.append({"tag": "hr"})
-
-            rows = []
-            for name in all_sites:
-                m = site_match.get(name, 0)
-                ok = site_ok.get(name, 0)
-                fail = site_fail.get(name, 0)
-                if m or ok or fail:
-                    if ok > 0 and fail == 0:
-                        icon = "🟢"
-                    elif ok > 0:
-                        icon = "🟡"
-                    elif m > 0:
-                        icon = "🔵"
-                    else:
-                        icon = "⚪"
-                    rows.append((icon, name, m, ok, fail))
-            rows.sort(key=lambda x: (x[4] == 0, -x[3], -x[2]))
 
             table_lines = [
                 "**📈 站点详情**\n",
                 "| 状态 | 站点 | 匹配 | 成功 | 失败 |",
                 "| :---: | :--- | ---: | ---: | ---: |",
             ]
-            for icon, name, m, ok, fail in rows:
+            for row in rows:
                 table_lines.append(
-                    f"| {icon} | {name} | {m} | {ok} | {fail} |"
+                    f"| {row.status_icon} | {row.name} | {row.matched} | "
+                    f"{row.succeeded} | {row.failed} |"
                 )
             elements.append({
                 "tag": "markdown",
@@ -109,8 +86,7 @@ class FeishuNotifier:
 
         site_total = len(stats.site_details)
         active = sum(1 for c in stats.site_details.values() if c > 0)
-        dead_sites = stats.failed_sites
-        dead_count = len(dead_sites) if dead_sites else 0
+        dead_count, dead_text = failed_sites_display(stats)
 
         footer_parts = [f"⏱ 耗时 **{stats.duration_str}**"]
         footer_parts.append(f"📡 {site_total} 站点")
@@ -124,17 +100,38 @@ class FeishuNotifier:
             "elements": [{"tag": "plain_text", "content": " · ".join(footer_parts)}],
         })
 
-        if dead_sites and len(dead_sites) <= 10:
+        if dead_count:
             elements.append({
                 "tag": "note",
                 "elements": [
-                    {"tag": "plain_text", "content": f"无匹配: {' '.join(dead_sites)}"}
+                    {"tag": "plain_text", "content": f"无匹配 ({dead_count} 个): {dead_text}"}
                 ],
             })
 
         return elements
 
+    @staticmethod
+    def _gen_sign(timestamp: str, secret: str) -> str:
+        """生成飞书自定义机器人签名。
+
+        签名字符串由 timestamp、换行符与 secret 依次拼接，以该字符串作为
+        HMAC-SHA256 的密钥对空消息体做摘要，再 Base64 编码。
+        timestamp 单位为秒，服务端只接受 1 小时内的值。
+        """
+        string_to_sign = f"{timestamp}\n{secret}"
+        digest = hmac.new(
+            string_to_sign.encode("utf-8"), digestmod=hashlib.sha256
+        ).digest()
+        return base64.b64encode(digest).decode("utf-8")
+
     async def _send(self, payload: dict) -> bool:
+        if self._secret:
+            timestamp = str(int(time.time()))
+            payload = {
+                "timestamp": timestamp,
+                "sign": self._gen_sign(timestamp, self._secret),
+                **payload,
+            }
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(

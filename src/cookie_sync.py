@@ -78,6 +78,8 @@ async def sync_cookies(url: str, uuid: str, password: str, sites_path: str) -> i
                 sort_keys=False,
             )
 
+        # yaml.dump 会把带引号的长 cookie 串折行成 "...\n    \ ..."，
+        # 这里把折行拼回单行，保持 sites.yaml 中 cookie 为单行双引号格式。
         raw = path.read_text(encoding="utf-8")
         raw = re.sub(r"\\\n    \\ ", " ", raw)
         path.write_text(raw, encoding="utf-8")

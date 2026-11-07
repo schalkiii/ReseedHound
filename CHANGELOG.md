@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-11-07 — 全面审计修复与文档一致性收口
+
+依据 `AUDIT-REPORT-2026-11-07.md` 的 60 条问题分阶段修复（功能 → 测试基线 → 架构 → 测试 → 工程/文档）。
+
+### 功能修复
+- **CLI 公共开关被子解析器默认值覆盖**：`--dry-run` / `--no-feishu` / `--site` / `--mode` / `--config` / `--sites-path` 改用 `argparse.SUPPRESS` + 解析后补齐，写在子命令前后都生效
+- **双下载器启动崩溃**：`ReseedEngine.start()` 改用 `destination_downloader_config`（主下载器 = destination），缺 `host` 时给可读 `ValueError` 而非 `KeyError`
+- **Transmission 静默失败**：`add_torrent` 签名与 `DownloaderBase` 完全对齐、支持 bytes payload，显式忽略不支持的参数
+- **`run_on_start=false` 无效**：首轮前等待一个完整间隔；修正 `_wait_with_stop` 返回值判断
+- **异常被吞**：三处 `gather(return_exceptions=True)` 逐个检查结果，计入 `failed_sites` / `failed_count`
+- **飞书签名未实现**：按官方 HMAC-SHA256 + Base64 算法补 `timestamp` / `sign`
+- 其他：缓存去重与唯一索引、日志重复 handler、死代码清理、限流规则去重、`Retry-After` HTTP-date 兜底、未知返回类型判定、默认密码移除、周报流式读取
+
+### 架构
+- **配置默认值单一来源**：新增 `DEFAULTS`，消除散落 4 处且互相矛盾的硬编码；`enable` / `enabled` 双写法兼容且未知字段启动告警
+- **单轮流程收敛**：新增 `src/runner.py`，`cmd_reseed` 与调度器每轮共用
+- **报告口径收敛**：新增 `src/report/site_table.py`，文本 / Markdown / 飞书卡片共用四档状态灯、按成功率排序与无匹配站点截断
+- **轮次标志收敛**：`RUN_MARKER` 单一常量，周报不再另维护 `LOG_MARKER`
+
+### 测试与门禁
+- 新增 `requirements-dev.txt` / `pytest.ini` / `.github/workflows/ci.yml`（Python 3.11 / 3.13 执行 flake8 + pytest）
+- 测试由 **17 项扩到 135 项**：全部用 `tmp_path` 生成临时配置，不再读取含真实凭据的本地 `config.yaml` / `sites.yaml`；哈希改用外部 golden 值；补齐 CLI、调度器、双下载器 / TR、网络、CookieCloud、Jackett、周报、引擎各阶段用例
+
+### 工程与文档
+- `SeedHound.bat` 加固（切目录 / Python 检查 / 参数透传 / 退出码 / pause）
+- GHCR `latest` 仅由 semver tag 的 `flavor=latest=auto` 生成，删除重复版本标签；`IMAGE_NAME` 保持不变
+- `.flake8` 增补 `exclude` / `per-file-ignores`；`.dockerignore` 删除无意义例外
+- README / AGENTS / 配置模板与实现对齐：Python 版本、配置示例与默认值、目录树、报告规则、标签规则、错误码清单、扫描层级、`force_close=True` 取舍、容器内不含 `scripts/`、测试前置条件
+
+### 核销
+- Q-01 ~ Q-60 **全部核销（60/60，未核销 0）**；逐条断言脚本以动态行为验证优先，结论与不改动说明见 `AUDIT-REPORT-2026-11-07.md` §6
+- 最终回归：`pytest tests/ -q` → `135 passed`；`flake8 src tests run.py scripts` → 0 错误；文档一致性与问题核销脚本均 ALL PASS
+- 三条显式不改动：Q-14（审计正面结论属实）、Q-60（本地备份已被 `.gitignore` 覆盖，保留用户数据）、`IMAGE_NAME`（metadata-action 自动小写化）
+- 改动均在工作区未提交；提交 / 打 `v*` Tag / 推送会触发 GHCR 发布，需用户审阅后显式确认
+
 ## 2026-11-07 — qBittorrent 5.3.0 兼容性修复
 
 ### 修复
@@ -73,7 +108,7 @@
 
 - README 新增"定时运行（原生调度器）"章节与三种触发方式
 - README Docker 部署新增 `SEEDHOUND_MODE` 说明表与常驻定时运行示例
-- README Docker 部署新增"从 GHCR 拉取镜像（推荐）"小节：镜像地址 `ghcr.io/reseed-puppy/seedhound`、标签说明（latest/v1.2.3/1.2）、docker 与 wslc 的 pull/run 示例、GitHub Actions 自动发布说明
+- README Docker 部署新增"从 GHCR 拉取镜像（推荐）"小节：镜像地址、标签说明、docker 与 wslc 的 pull/run 示例、GitHub Actions 自动发布说明（该条目中的 `ghcr.io/reseed-puppy/seedhound` 是当时的历史地址，现已统一为 `ghcr.io/schalkiii/reseedhound`）
 - README Docker 部署新增"使用 wslc 部署（微软原生 WSL 容器）"小节：`wslc.exe` 是微软 Build 2026 随 WSL 预览版内置的容器 CLI（语法同 docker、`container.exe` 别名），含安装、构建、运行（`-e SEEDHOUND_MODE=schedule`）、运维命令对照表，以及宿主机下载器用 `host.wsl.localhost` 而非 `127.0.0.1` 的提示
 - README 目录结构补充 `src/scheduler.py`
 
@@ -83,6 +118,9 @@
 
 - **`enable: false` 不生效**：`config.py` 读取 `sites.yaml` 时字段名为 `enabled`，但实际配置文件中使用的是 `enable`，字段名不匹配导致设为 `false` 的站点仍参与辅种。现已兼容两种写法，优先读取 `enable`
 - **示例配置缺失 `enable` 字段**：`sites.example.yaml` 补充了 `enable` 字段及其说明
+
+> **修正注记**：以上两条是当时的计划，实际代码长期只读 `enabled`，承诺直到 2026-11-07 审计修复才真正落地。
+> 当前实现同时兼容 `enable` / `enabled`（`enable` 优先），模板统一推荐 `enabled` 并保留兼容说明。
 
 ### 精简
 
