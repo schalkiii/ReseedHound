@@ -33,7 +33,7 @@
 - Q-01 ~ Q-60 **全部核销（60/60，未核销 0）**；逐条断言脚本以动态行为验证优先，结论与不改动说明见 `AUDIT-REPORT-2026-11-07.md` §6
 - 最终回归：`pytest tests/ -q` → `135 passed`；`flake8 src tests run.py scripts` → 0 错误；文档一致性与问题核销脚本均 ALL PASS
 - 三条显式不改动：Q-14（审计正面结论属实）、Q-60（本地备份已被 `.gitignore` 覆盖，保留用户数据）、`IMAGE_NAME`（metadata-action 自动小写化）
-- 改动均在工作区未提交；提交 / 打 `v*` Tag / 推送会触发 GHCR 发布，需用户审阅后显式确认
+- 本次改动随 `v1.1.0` 发布；推送 `v*` 标签会触发 `.github/workflows/docker.yml` 构建并推送 GHCR 镜像（`1.1.0` / `1.1` / `latest`）
 
 ## 2026-11-07 — qBittorrent 5.3.0 兼容性修复
 

@@ -484,5 +484,6 @@
   `tests/test_engine.py`、`tests/test_network.py`、`tests/test_scheduler.py`、
   `pytest.ini`、`requirements-dev.txt`、`.github/workflows/ci.yml`、`AUDIT-REPORT-2026-11-07.md`。
 
-> 改动目前均在**工作区未提交**。`docker.yml` 由 `v*` tag 触发 GHCR 发布，
-> 提交 / 打 Tag / 推送属有外部副作用的动作，需用户审阅后显式确认再执行。
+> 本轮改动已按用户确认走「提交 → Tag → 推送」流程发布为 `v1.1.0`。
+> 推送 `v*` 标签会触发 `.github/workflows/docker.yml` 构建并推送 GHCR 镜像
+> （`1.1.0` / `1.1` / `latest`）。

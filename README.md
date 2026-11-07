@@ -241,8 +241,9 @@ GitHub 原生容器仓库为 **GHCR（`ghcr.io`）**。SeedHound 的镜像发布
 | `1.2`        | `type=semver,pattern={{major}}.{{minor}}` | 主.次 版本通道                              |
 | `<分支名>`   | `type=ref,event=branch`                   | 手动 `workflow_dispatch` / 分支构建，**不覆盖 `latest`** |
 
-> 工作流不再无条件写 `latest`，也不再用 `type=ref,event=tag` 与 `type=semver` 重复产出
-> `v1.2.3` / `1.2.3` 两个标签。`IMAGE_NAME` 保留 `${{ github.repository }}`，
+> 工作流不再无条件写 `latest`。旧配置里 `type=ref,event=tag` 产出 `v1.2.3`、
+> `type=semver` 产出 `1.2.3`，同一版本出现两个标签；现已删除前者，只保留上表三个标签。
+> `IMAGE_NAME` 保留 `${{ github.repository }}`，
 > `docker/metadata-action` 会自动把仓库名小写化为 `reseedhound`。
 
 **拉取与运行（docker / wslc 通用）**：
