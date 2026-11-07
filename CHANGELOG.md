@@ -33,7 +33,10 @@
   `skip_hash_check` 悄悄失效（种子照加，但会重新完整校验）
 
 ### 新增
-- `test_add_result_compat`、`test_stopped_complete_states` 两项单元测试；全套 15 项通过
+- 单元测试扩充到 **17 项**（新增添加结果判定、日志脱敏、自动开始补 resume 三组）；全套通过
+- `scripts/weekly_report.py` 纳入版本管理：按站点聚合近 N 天辅种指标，并可选清理远期日志（默认 dry-run）
+- `SeedHound.bat` 纳入版本管理：Windows 一键启动入口（`python run.py`）
+- 历史日志就地脱敏：`logs/reseed.log` 中 53 处 passkey 已改为 `passkey=***`（本地文件，不入库）
 
 ## 2026-09-25 — 调度器 CookieCloud 自动同步 + 统计/超时/死种优化
 

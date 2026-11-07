@@ -16,7 +16,7 @@ python run.py reseed                    # 一次性辅种
 python run.py reseed --dry-run          # 只查询不添加（改动前先跑这个）
 python run.py schedule                  # 按 config 中 scheduler 循环运行
 python run.py sync-cookies              # 单独同步 CookieCloud
-python -m pytest tests/ -q              # 15 项测试
+python -m pytest tests/ -q              # 17 项测试
 python -m flake8 src tests run.py       # 门禁：max-line-length=120（见 .flake8）
 ```
 
@@ -37,6 +37,7 @@ Python 3.13 + asyncio；`qbittorrent-api` / `transmission-rpc` 操作下载器�
 | `src/engine/parser.py` | `.torrent` → info_hash / pieces_hash |
 | `src/storage/cache.py` | 增量缓存、辅种记录、死种持久化 |
 | `src/report/generator.py` | 报告排版；改排版要同步 `tests/test_report.py` |
+| `scripts/weekly_report.py` | 日志周报 + 远期日志清理（默认 dry-run，`--apply` 才写盘） |
 
 统计口径以「片段级」累计：只有某源种子没有任何站点成功时才计入 `failed_count`。
 
@@ -61,5 +62,5 @@ Python 3.13 + asyncio；`qbittorrent-api` / `transmission-rpc` 操作下载器�
 ## 当前状态
 
 - 生产下载器：qBittorrent v5.3.0 / WebAPI 2.16.2，约 4.1 万种子（地址见本地 `config.yaml`，不写入仓库）。
-- 2026-11-07 完成 5.3.0 兼容修复（见 CHANGELOG 同名小节）。
-- 待处理：`scripts/weekly_report.py` 与 `SeedHound.bat` 仍未纳入版本管理，README 的目录结构也未提它们。
+- 2026-11-07 完成 5.3.0 兼容修复（见 CHANGELOG 同名小节）；实测一轮：匹配 123 / 成功 8（修复前恒为 0）。
+- 2026-11-07 首次发布 `v1.0.0`；GHCR 镜像由 `v*` tag 触发的 `.github/workflows/docker.yml` 构建。

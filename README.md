@@ -106,6 +106,7 @@ notify:
 ```
 seedhound/
 ├── run.py                    # 入口
+├── SeedHound.bat             # Windows 一键启动（等价于 python run.py）
 ├── config.example.yaml       # 主配置模板
 ├── sites.example.yaml        # 站点配置模板
 ├── requirements.txt          # 依赖
@@ -127,7 +128,9 @@ seedhound/
 │   └── utils/
 │       ├── _bencode.py       # Bencode 编解码（纯 Python，零依赖）
 │       ├── hash.py           # 哈希工具（SHA1 / Pieces SHA1）
-│       └── logger.py         # 日志初始化
+│       └── logger.py         # 日志初始化（passkey 脱敏 + UTF-8 输出）
+├── scripts/
+│   └── weekly_report.py      # 日志周报生成 + 远期日志清理（默认 dry-run）
 └── tests/
     ├── test_core.py          # 核心模块单元测试
     ├── test_integration.py   # 异步集成测试
@@ -475,7 +478,22 @@ python run.py sync-cookies
 [--] 站点名 未匹配到 Cookie               ← 该站点在 Cookie Cloud 中无数据
 ```
 
-> **注意**：`sites.yaml` 中的 cookie 值以双引号包裹且位于单行，避免 YAML 解析歧义。同步完成后建议提交 `sites.yaml` 以备份最新的站点认证信息。
+> **注意**：`sites.yaml` 中的 cookie 值以双引号包裹且位于单行，避免 YAML 解析歧义。
+> 该文件含站点 Cookie / passkey，已在 `.gitignore` 中排除，**不要提交入库**；需要备份请自行复制本地文件。
+
+### 日志周报与日志清理
+
+`scripts/weekly_report.py` 解析 `logs/reseed.log`，按站点聚合近一段时间的辅种指标：
+
+```bash
+python scripts/weekly_report.py                        # 近 7 天周报，输出到控制台
+python scripts/weekly_report.py --days 30              # 自定义时间窗
+python scripts/weekly_report.py --markdown out.md      # 同时写出 Markdown
+python scripts/weekly_report.py --clean --keep-days 30           # 预览将清理的远期日志
+python scripts/weekly_report.py --clean --keep-days 30 --apply   # 真正截断
+```
+
+清理默认 dry-run，只有加 `--apply` 才会改写日志文件。
 
 ## 辅种方法学
 
