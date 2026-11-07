@@ -548,8 +548,8 @@ SeedHound 在辅种流水线的不同阶段部署了三层过滤，逐层拦截�
 
 `torrents_add` 的成功判定同样分版本：WebAPI v2.14.0（qB 5.2）起返回 JSON 计数
 （`success_count` / `failure_count` / `pending_count`），更早才返回纯文本 `Ok.`；只判 `== "Ok."`
-会把 5.2/5.3 上的每次成功添加都记成失败，且辅种记录不落库、下一轮重复添加。见
-`QbittorrentDownloader._is_add_success`。
+会把 5.2/5.3 上的每次成功添加都记成失败；更关键的是「自动开始」只在添加成功分支里执行，这批种子会长期
+停在暂停态不做种。见 `QbittorrentDownloader._is_add_success`。
 
 ```
 ┌────────────┐    ┌─────────────┐    ┌──────────────┐

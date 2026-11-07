@@ -5,7 +5,8 @@
 ### 修复
 - **添加结果判定不再只认 `"Ok."`**：WebAPI v2.14.0（qB 5.2）起 `torrents/add` 返回 JSON 计数
   （`success_count` / `failure_count` / `pending_count`），旧判定把 5.2/5.3 上每一次成功添加都记成失败，
-  且静默无日志。后果链是：`succeeded_count` 恒为 0 → 辅种记录不写库 → 下一轮重复下载并重复添加同一批种子。
+  且静默无日志。后果链是：`succeeded_count` 恒为 0；本轮不写辅种记录；尤其是「自动开始」只在添加成功分支里执行，
+  于是这批种子长期停在暂停态、不做种；下一轮它们会命中「hash 已在客户端」分支被补记成功，但该分支同样不 resume。
   现由 `QbittorrentDownloader._is_add_success` 同时兼容文本与字典两种形态，未受理时打印原始返回值
 - **「自动开始」兼容 5.x 状态改名**：`pausedUP` 在 qBittorrent 5.x 更名为 `stoppedUP`，只判旧名会让加进去的
   种子长期停在暂停态；状态集合提取为 `STOPPED_COMPLETE_STATES`（含旧名、新名与 Transmission 的 `completed`）

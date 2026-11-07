@@ -43,7 +43,7 @@ Python 3.13 + asyncio；`qbittorrent-api` / `transmission-rpc` 操作下载器�
 ## 必守的坑（qBittorrent 版本相关）
 
 - **`torrents/add` 的返回体分版本**：WebAPI ≥ 2.14.0（qB 5.2）返回 JSON 计数，更早才是文本 `Ok.`。
-  只判 `== "Ok."` 会把成功全记成失败，且辅种记录不落库、下一轮重复添加。
+  只判 `== "Ok."` 会把成功全记成失败；「自动开始」只在添加成功分支里执行，所以这些种子会长期停在暂停态不做种。
 - **`skip_checking` 在 5.3.0（WebAPI 2.16）改名 `seedMode`**，未识别参数被服务端**静默忽略**——
   HTTP 依然成功但校验照做。靠 `qbittorrent-api>=2026.8.1` 双写新旧名字，不要降版本或自己拼 HTTP。
 - **`pausedUP` 在 5.x 改名 `stoppedUP`**（`paused`→`stopped` 同一波改名）；状态判断要用
