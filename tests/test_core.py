@@ -135,6 +135,36 @@ def test_log_redaction():
     print("PASS: 日志 passkey 脱敏")
 
 
+def test_auto_start_resumes_stopped_torrent():
+    """添加后若落在停止态，auto_start 应补一次 resume；已在做种则不动"""
+    import asyncio
+
+    from src.engine.seeder import ReseedEngine
+
+    class FakeDownloader:
+        def __init__(self, states):
+            self.states = list(states)
+            self.resumed = []
+
+        async def get_torrent_info(self, info_hash):
+            state = self.states.pop(0) if self.states else "uploading"
+            return None if state is None else {"state": state}
+
+        async def resume_torrent(self, info_hash):
+            self.resumed.append(info_hash)
+            return True
+
+    engine = ReseedEngine.__new__(ReseedEngine)  # 只测该方法，绕开构造依赖
+    engine._downloader = FakeDownloader(["stoppedUP"])
+    asyncio.run(engine._ensure_started("h1", "f.torrent", "siteA"))
+    assert engine._downloader.resumed == ["h1"], "停止态必须补 resume"
+
+    engine._downloader = FakeDownloader(["uploading"])
+    asyncio.run(engine._ensure_started("h2", "f.torrent", "siteA"))
+    assert engine._downloader.resumed == [], "已在做种不应重复 resume"
+    print("PASS: 自动开始补 resume")
+
+
 if __name__ == "__main__":
     test_bencode_roundtrip()
     test_bencode_types()
@@ -145,6 +175,7 @@ if __name__ == "__main__":
     test_add_result_compat()
     test_stopped_complete_states()
     test_log_redaction()
+    test_auto_start_resumes_stopped_torrent()
     print()
     print("=" * 50)
     print("  所有核心模块测试通过!")

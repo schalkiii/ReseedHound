@@ -51,6 +51,12 @@ def trim_log_file(log_path: str, keep_runs: int = 3):
 
 
 def setup_logger(level: str = "INFO", log_file: str = "logs/seedhound.log") -> logging.Logger:
+    # Windows 控制台默认 GBK，报告里的 emoji（🟢🔴）会让 print 抛 UnicodeEncodeError，
+    # 连带跳过飞书推送；stdout 重定向到文件时同样如此。统一按 UTF-8 输出，不可编码字符降级。
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     logger = logging.getLogger("seedhound")
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
 

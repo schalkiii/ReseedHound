@@ -485,6 +485,26 @@ class ReseedEngine:
                 site_match_counts[site_name] = site_match_counts.get(site_name, 0) + 1
         self._stats.site_match_counts = site_match_counts
 
+    async def _ensure_started(self, info_hash: str, file_name: str, site_name: str):
+        """添加后确认种子真的在做种。
+
+        qbittorrent-api 会把 is_paused=False 折叠成「不发送该参数」，qB 于是按全局
+        add_stopped_enabled 把种子加成 stoppedUP；这里补一次 resume，
+        并给服务端留出初始化（checkingResumeData）的时间。
+        """
+        for _ in range(3):
+            await asyncio.sleep(0.6)
+            info = await self._downloader.get_torrent_info(info_hash)
+            if not info:
+                continue
+            state = info.get("state")
+            if state not in STOPPED_COMPLETE_STATES:
+                return
+            if await self._downloader.resume_torrent(info_hash):
+                logger.info("自动开始: %s (%s, %s)", file_name, site_name, state)
+                return
+        logger.warning("自动开始失败，种子仍处于停止态: %s (%s)", file_name, site_name)
+
     async def _phase_add_torrents(self, sites: list[dict]):
         logger.info("[阶段3] 添加种子到下载器...")
         if not self._match_map:
@@ -669,14 +689,11 @@ class ReseedEngine:
 
                         if new_info_hash:
                             qb_info_hashes.add(new_info_hash)
-                            await asyncio.sleep(0.3)
-                            ti = await self._downloader.get_torrent_info(new_info_hash)
-                            if ti and ti.get("state") in STOPPED_COMPLETE_STATES:
-                                await self._downloader.resume_torrent(new_info_hash)
-                                logger.info(
-                                    "自动开始: %s (%s, 已完成)",
-                                    entry["file_name"],
-                                    site_name,
+                            # auto_start=false 时必须保持暂停，此前这里无条件 resume，
+                            # 导致该开关实际无效
+                            if auto_start:
+                                await self._ensure_started(
+                                    new_info_hash, entry["file_name"], site_name
                                 )
                     else:
                         piece_failed += 1

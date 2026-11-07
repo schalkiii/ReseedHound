@@ -120,7 +120,11 @@ class QbittorrentDownloader(DownloaderBase):
             kwargs = dict(
                 save_path=save_path,
                 is_skip_checking=skip_hash_check,
+                # is_paused=False 会被 qbittorrent-api 折叠成"不发送该参数"
+                # （合并逻辑是 is_paused or is_stopped），服务端便按全局
+                # add_stopped_enabled 把种子加成停止态；两个都传才能显式表达"启动"
                 is_paused=paused,
+                is_stopped=paused,
             )
             if download_url:
                 kwargs["urls"] = download_url
