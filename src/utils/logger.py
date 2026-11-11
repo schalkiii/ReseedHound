@@ -8,13 +8,23 @@ from typing import Optional
 # 修改日志文案时只需改这一处。
 RUN_MARKER = "SeedHound 辅种引擎启动"
 
-# 下载链接形如 .../download.php?id=1&passkey=xxxx，passkey 等同于账号权限
-_PASSKEY_PATTERN = re.compile(r"(passkey=)[^&\s\"']+", re.IGNORECASE)
+# 下载链接形如 .../download.php?id=1&passkey=xxxx，passkey 等同于账号权限。
+# HDArea 通道另外引入 apikey 查询参数、dl_token 短效凭证与 X-API-Key 请求头，
+# 一并纳入统一脱敏，避免新增日志点各自处理。
+_SECRET_PATTERNS = (
+    re.compile(r"(passkey=)[^&\s\"']+", re.IGNORECASE),
+    re.compile(r"(api[_-]?key=)[^&\s\"']+", re.IGNORECASE),
+    re.compile(r"(dl_token=)[^&\s\"']+", re.IGNORECASE),
+    re.compile(r"(X-API-Key:\s*)\S+", re.IGNORECASE),
+)
 
 
 def redact_secrets(text: str) -> str:
-    """把日志文本里的 passkey 打码。"""
-    return _PASSKEY_PATTERN.sub(r"\1***", str(text))
+    """把日志文本里的 passkey / API Key / 短效下载凭证打码。"""
+    redacted = str(text)
+    for pattern in _SECRET_PATTERNS:
+        redacted = pattern.sub(r"\1***", redacted)
+    return redacted
 
 
 class _RedactSecretsFilter(logging.Filter):

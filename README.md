@@ -24,8 +24,12 @@
 运行时依赖共 7 个包，见下方「依赖」章节与 `requirements.txt`；缓存使用 SQLite（`aiosqlite` 驱动）。
 
 ```
-本地种子 → 提取 pieces_hash → 并发查询所有站点 API → 匹配 → 添加到下载器
+本地种子 → 提取 pieces_hash / info_hash → 并发查询各站点 API → 匹配 → 添加到下载器
 ```
+
+绝大多数站点按 `pieces_hash` 批量查询；对提供 REST API 的站点（如 HDArea）另走
+`info_hash` 精确匹配通道，两者在查询阶段分流、共用后续下载与统计链路，
+详见「HDArea info_hash 辅种通道」。
 
 全程异步非阻塞，不产生冗余线程或子进程开销。
 
@@ -36,7 +40,7 @@
 | 全链路异步        | `asyncio` + `aiohttp` 异步并发    | 万级种子秒级完成扫描                  |
 | 站点并发查询      | 信号量限流 + `asyncio.gather`     | 94 条查询链路并行，耗时约等于最慢站点 |
 | 增量缓存          | SQLite 持久化 pieces_hash 索引    | 已扫描种子零重复解析                  |
-| 批量 API 调用     | 单次 POST 最多 100 个 pieces_hash | 减少 HTTP 往返，实测提升 3-5x         |
+| 批量 API 调用     | 通用通道单次 POST 最多 100 个 pieces_hash；HDArea 通道最多 200 个 info_hash | 减少 HTTP 往返，实测提升 3-5x |
 | Bencode 纯 Python | 零依赖解析器，线程池并行          | 解包 37000+ 种子文件 < 20 秒          |
 | 分批限流添加      | 20 并发 + 0.3s 间隔               | 避免下载器瞬时阻塞                    |
 
@@ -113,7 +117,8 @@ CLI 与环境变量只负责**运行模式与临时覆盖**，不写回配置文
 
 - `config.yaml` / `sites.yaml` 不入库，使用 `.example` 文件作为模板
 - 代码中不保留任何凭据默认值，CookieCloud 的 uuid / 密码只从本地 `config.yaml` 读取
-- 日志写入前统一脱敏 `passkey`（`src/utils/logger.py` 的日志过滤器，覆盖文件与控制台两个 handler）
+- 日志写入前统一脱敏 `passkey` / `apikey` / `api_key` / `dl_token` / `X-API-Key:`
+  （`src/utils/logger.py` 的 `redact_secrets()`，挂在文件与控制台两个 handler 上）
 - 飞书 webhook 仅在配置文件中声明
 
 ## 目录结构
@@ -142,6 +147,7 @@ seedhound/
 │   │   └── jackett.py            # Jackett Torznab 搜索与下载缓存
 │   ├── network/
 │   │   ├── client.py             # 异步 HTTP 客户端（限流 + 重试 + 死种识别）
+│   │   ├── hdarea.py             # HDArea REST API v1 的 info_hash 批量匹配适配器
 │   │   └── cookiecloud.py        # CookieCloud 解密与域名匹配
 │   ├── notify/
 │   │   └── feishu.py             # 飞书机器人推送（消息卡片 + 签名）
@@ -154,13 +160,13 @@ seedhound/
 │   └── utils/
 │       ├── _bencode.py           # Bencode 编解码（纯 Python，零依赖）
 │       ├── hash.py               # 哈希工具（SHA1 / Pieces SHA1）
-│       └── logger.py             # 日志初始化（passkey 脱敏 + UTF-8 输出 + RUN_MARKER）
+│       └── logger.py             # 日志初始化（凭据脱敏 + UTF-8 输出 + RUN_MARKER）
 ├── scripts/
 │   └── weekly_report.py          # 日志周报 + 远期日志清理（默认 dry-run；不在 Docker 镜像内）
 └── tests/
     ├── conftest.py / helpers.py  # tmp_path 配置 fixture 与外部 golden 值
     ├── test_cli.py / test_config.py / test_cookie.py / test_core.py
-    ├── test_downloader.py / test_engine.py / test_integration.py
+    ├── test_downloader.py / test_engine.py / test_hdarea.py / test_integration.py
     └── test_network.py / test_report.py / test_scheduler.py
 ```
 
@@ -408,20 +414,25 @@ cookiecloud:
   url: "http://127.0.0.1:8082/cookie"
   uuid: "your-uuid"
   password: "your-password"
+
+hdarea:
+  request_interval: 1.1
+  concurrency: 2
 ```
 
 **默认值单一来源**：上表中所有可缺省字段（含 `api_timeout=60`、`download_timeout=15`、
 `retry_count=2`、`retry_delay=2.0`、`download_interval=5.0`、`log.file=logs/reseed.log`、
-`downloader.skip_hash_check/auto_start/tag`）都定义在 `src/storage/config.py` 的 `DEFAULTS`；
-业务模块不再各自硬编码数值。省略某字段即取该默认值，写进配置则覆盖。
-`jackett.retry_count` / `retry_delay` 可省略，省略时继承 `global` 的同名值。
+`downloader.skip_hash_check/auto_start/tag`、`hdarea.request_interval/concurrency`）都定义在
+`src/storage/config.py` 的 `DEFAULTS`；业务模块不再各自硬编码数值。省略某字段即取该默认值，
+写进配置则覆盖。`jackett.retry_count` / `retry_delay` 可省略，省略时继承 `global` 的同名值；
+`hdarea` 整块也可省略，仅当 `sites.yaml` 里存在 `api_type: hdarea` 的站点时才会被读取。
 
 **双下载器模式**：把 `downloader` 换成 `source` / `destination` 两个子块（写法见 `config.example.yaml`）。
 运行时**主下载器取 `destination`**（实际添加种子的目标），`source` 只提供本地种子库；
 `torrent_dir` 读 `source`，`skip_hash_check` / `auto_start` / `tag` 读 `destination`。
 `create_downloader` 缺少 `host` 时会给出可读报错，不会抛 `KeyError`。
 
-编辑 `sites.yaml` 填入各 PT 站点的 passkey：
+编辑 `sites.yaml` 填入各 PT 站点的凭据（通用通道用 `passkey`，HDArea 通道用 `api_key`）：
 
 ```yaml
 sites:
@@ -435,12 +446,16 @@ sites:
 | 字段 | 说明 |
 | --- | --- |
 | `name` | 站点名，用于 `--site` 指定与报告展示 |
-| `url` | 站点主页，按 tracker 域名做同站预过滤 |
-| `api_url` | pieces_hash 查询接口，POST `{"passkey": ..., "pieces_hash": [...]}` |
-| `passkey` | 必填；为空的站点会被忽略 |
+| `url` | 站点主页，按 tracker 域名做同站预过滤；HDArea 省略 `api_url` 时据此推导 REST 路径 |
+| `api_url` | 通用通道填 pieces_hash 查询接口（POST `{"passkey": ..., "pieces_hash": [...]}`）；HDArea 通道填 `/api/v1/torrents/hashes` |
+| `passkey` | 通用通道必填；既无 `passkey` 又无 `api_key` 的站点会被忽略 |
+| `api_type` | 可选，缺省按通用 pieces_hash 通道处理；填 `hdarea` 时改走 info_hash 批量匹配通道 |
+| `api_key` | HDArea 通道必填（32 位 API Key，走 `X-API-Key` 请求头），不需要 `passkey` |
 | `enabled` | 是否启用，缺省 `true`；兼容历史写法 `enable`，两者同时出现时以 `enable` 为准 |
 | `cookie` / `cookies` | 可选站点 Cookie，同时存在时优先 `cookie` |
 | `download_interval` | 可选，覆盖 `global.download_interval` 的每域名下载间隔（秒） |
+
+HDArea 站点的完整写法与限制见下方「HDArea info_hash 辅种通道」。
 
 ### 运行
 
@@ -692,7 +707,7 @@ SeedHound 在辅种流水线的不同阶段部署了三层过滤，逐层拦截�
 三阶段流水线：
 
 1. **扫描阶段**：扫描 `torrent_dir` **当前层**的 `*.torrent`（`Path.glob`，不递归子目录），解析提取 `pieces_hash`，增量更新缓存；种子按子目录组织时需自行展平或调整挂载路径
-2. **查询阶段**：Pieces-hash 模式批量 POST 到各站点 `/api/pieces-hash`；Jackett 模式通过 Torznab API 跨站搜索
+2. **查询阶段**：Pieces-hash 模式批量 POST 到各站点 `/api/pieces-hash`；`api_type: hdarea` 的站点按 200 个一批把 `info_hash` POST 到 `/api/v1/torrents/hashes`；Jackett 模式通过 Torznab API 跨站搜索
 3. **添加阶段**：匹配到的种子依次执行 ① 从站点下载 `.torrent` → ② pieces_hash 校验 → ③ 添加到下载器。pieces_hash 模式按 `config.yaml` 的 `downloader.skip_hash_check`（默认 `true`，即直接认定完成）与 `downloader.auto_start`（默认 `true`，即不加暂停）下发；Jackett 模式则固定 `skip_hash_check=false, paused=true`，由 qBittorrent 自行 recheck 确认文件匹配后做种
 
 ### 双模式辅种
@@ -701,6 +716,10 @@ SeedHound 在辅种流水线的不同阶段部署了三层过滤，逐层拦截�
 | --------------- | ---------------------------------------------------- | ------------------- |
 | **pieces_hash** | 直接 POST pieces_hash 到站点 `/api/pieces-hash`      | 支持该 API 的 PT 站 |
 | **Jackett**     | 通过 Jackett Torznab API 搜索 title+year，按尺寸过滤 | 任意 Jackett 索引器 |
+
+> 上表是 `--mode` 控制的两种**全局**辅种方式。此外还有一条按站点自动分流的第三条通道：
+> `sites.yaml` 中标记 `api_type: hdarea` 的站点会改走 REST API 批量 `info_hash` 匹配，
+> 不受 `--mode` 影响，详见后文专节。
 
 Jackett 模式流程：
 
@@ -725,6 +744,62 @@ POST https://example.com/api/pieces-hash
 ```
 
 配置站点时若不确定 API 是否可用，先用 `curl -X POST` 试一下即可确认；不支持该 API 的站点可改用上方「双模式辅种」中的 Jackett 路径。
+
+### HDArea info_hash 辅种通道
+
+部分站点不提供 pieces-hash API，但提供 REST API v1 的批量 `info_hash` 查询（HDArea 的接口见
+`api_docs.php` §2.3「IYUUPlus / MoviePilot 跨站批量辅种」）。SeedHound 为这类站点加了独立通道：
+一次 POST 最多 200 个本地正在做种的 40 位十六进制 `info_hash`，毫秒级返回本站在库的种子 ID
+与带短效凭证的下载链接，**零网页爬虫开销**，也不受 `--mode` 影响。
+
+| 维度 | 通用 pieces_hash 通道 | HDArea info_hash 通道 |
+| --- | --- | --- |
+| 匹配键 | 内容片段哈希 | info 字典哈希（40 位 hex） |
+| 凭据 | `passkey` | `api_key`（`X-API-Key` 请求头） |
+| 单批上限 | `global.batch_size`（默认 100，可配） | 固定 200（接口硬上限，不可配） |
+| 下载链接 | 拼接 `download.php?id=...&passkey=...` | 接口返回的 `download_url`（带 `dl_token`，1800 秒有效） |
+| 是否需要站点 Cookie | 视站点而定 | 不需要 |
+| 召回率 | 高 | 较低，是 pieces_hash 匹配的子集 |
+
+> **召回率预期要放对**：各站发布种子时会改写 info 字典（`source` / `private` / passkey 等），
+> 只有 info 字典完全一致时 `info_hash` 才相同，因此该通道只能命中「种子文件被原样搬运」的场景。
+> 实测用本地 `BT_backup` 前 200 个种子回查，命中 4 个（2%）。它是把这类站点纳入辅种体系的补充通道，
+> **不能替代**通用 pieces_hash 通道；两者对各自站点并行运行，互不影响。
+
+**配置**（`api_key` 只从本地 `sites.yaml` 读取，不要提交入库）：
+
+```yaml
+# config.yaml（整块可省略，取 DEFAULTS 默认值）
+hdarea:
+  request_interval: 1.1   # 相邻批次最小发送间隔（秒）
+  concurrency: 2          # 只限制在途响应数量，不放大发送速率
+
+# sites.yaml
+- name: HDArea
+  url: https://hdarea.club
+  api_type: hdarea
+  api_url: https://hdarea.club/api/v1/torrents/hashes   # 可省略，由 url 自动推导
+  api_key: your_32_char_api_key_here
+  enabled: true
+```
+
+站点读取接口声明 **60 次/分**限流，`request_interval=1.1` 用全局节流锁保证相邻批次间隔，
+`concurrency=2` 只限制在途响应数量；两者都在 `DEFAULTS` 中，省略即取默认值。
+每批最多 200 个 `info_hash` 是接口硬约束，`src/network/hdarea.py` 的 `MAX_HASHES_PER_REQUEST`
+会强制收敛，不提供配置项；非法哈希会在分批时过滤掉。
+
+**下载与兜底**：查询阶段把命中项的 `download_url` 按 `(站点名, 种子 ID)` 暂存，添加阶段优先用它；
+实测该链接带 `dl_token`，不带任何 Cookie 也能返回 `application/x-bittorrent`。若查询到下载的间隔过长、
+短效链接返回 `http_403`，会自动改用文档支持的 `download.php?id=...&apikey=...` 直链重试一次，
+避免整站被误判为不可访问。通用站点仍拼 `passkey`，行为完全不变。
+
+**安全**：API Key 与 tracker passkey 是两套独立凭据，下载种子时服务端会动态写入个人 passkey，
+不要把两者混用。日志过滤器统一脱敏 `passkey=` / `apikey=` / `api_key=` / `dl_token=` /
+`X-API-Key:`，短效凭证不会落盘。
+
+**验证**：先跑 `python run.py --site HDArea --dry-run` 查看命中数（只查询不添加）；
+`tests/test_hdarea.py` 的 21 项专项用例用假客户端覆盖分批、响应解析、双通道分流、
+短效链接与 403 兜底、日志脱敏，不依赖真实站点也不读取本地凭据。
 
 ## 依赖
 
@@ -754,7 +829,7 @@ yarl>=1.9.0
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
 python -m flake8 src tests run.py       # 0 错误
-python -m pytest tests/ -q              # 当前 135 项用例全绿
+python -m pytest tests/ -q              # 当前 156 项用例全绿（含 HDArea 专项 21 项）
 ```
 
 `.github/workflows/ci.yml` 在 push / PR 上以 Python 3.11 / 3.13 矩阵自动执行这两条门禁。

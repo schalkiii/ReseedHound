@@ -347,7 +347,14 @@ class SiteClient:
 
         return None, "timeout"
 
-    async def post_json(self, url: str, data: dict, retries: int = 1) -> Optional[dict]:
+    async def post_json(
+        self,
+        url: str,
+        data: dict,
+        retries: int = 1,
+        headers: Optional[dict[str, str]] = None,
+    ) -> Optional[dict]:
+        """POST JSON；headers 用于 X-API-Key 这类按站点区分的鉴权头。"""
         last_error = ""
         for attempt in range(retries):
             try:
@@ -356,6 +363,7 @@ class SiteClient:
                         url,
                         json=data,
                         timeout=self._timeout,
+                        headers=headers,
                     ) as resp:
                         if resp.status == 200:
                             if attempt > 0:

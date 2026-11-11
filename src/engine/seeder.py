@@ -7,6 +7,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from ..network.client import DeadTorrentCache, SiteClient
+from ..network.hdarea import HdareaMatcher, is_hdarea_site
 from ..storage.cache import TorrentCache
 from ..storage.config import Config
 from .downloader import DownloaderBase, create_downloader
@@ -84,10 +85,22 @@ class ReseedEngine:
             dead_cache=self._dead_cache,
             site_cookies=site_cookies,
         )
+        self._hdarea = HdareaMatcher(
+            self._client,
+            request_interval=config.value("hdarea", "request_interval"),
+            concurrency=config.value("hdarea", "concurrency"),
+            retry_count=config.value("global", "retry_count"),
+        )
         self._downloader: Optional[DownloaderBase] = None
         self._src_downloader: Optional[DownloaderBase] = None
         self._batch_size = config.value("global", "batch_size")
         self._stats = ReseedStats()
+
+        # HDArea 通道的中间产物：info_hash -> pieces_hash，以及短效下载链接。
+        # 通用通道不写这两张表，行为保持原样。
+        self._info_hash_index: dict[str, str] = {}
+        self._download_url_map: dict[tuple[str, int], str] = {}
+        self._match_map: dict[str, list[tuple[str, int, str]]] = {}
 
         # 运行模式由 global.mode / --mode 决定；jackett.enabled 只控制 Jackett 客户端是否可用，
         # 不再反过来把模式静默降级成 pieces_hash。
@@ -400,6 +413,20 @@ class ReseedEngine:
         logger.info("[阶段2] 并发查询各站点...")
         pieces_hashes = [t["pieces_hash"] for t in self._torrents]
 
+        # HDArea 通道按 info_hash 查询，先建立 info_hash <-> pieces_hash 双向索引，
+        # 命中的站内种子才能回落到统一的片段级统计口径。
+        self._info_hash_index = {
+            t["info_hash"].lower(): t["pieces_hash"]
+            for t in self._torrents
+            if t.get("info_hash")
+        }
+        pieces_hash_to_info_hash = {
+            t["pieces_hash"]: t["info_hash"].lower()
+            for t in self._torrents
+            if t.get("info_hash")
+        }
+        self._download_url_map = {}
+
         domain_to_site = {}
         for s in sites:
             domain = urlparse(s["url"]).netloc
@@ -454,14 +481,38 @@ class ReseedEngine:
                 exclude = site_exclude.get(site_name, set())
                 site_hashes = [ph for ph in pieces_hashes if ph not in exclude]
 
-                logger.info("查询站点: %s (%d 个种子)", site_name, len(site_hashes))
+                if is_hdarea_site(site):
+                    info_hashes = [
+                        pieces_hash_to_info_hash[ph]
+                        for ph in site_hashes
+                        if ph in pieces_hash_to_info_hash
+                    ]
+                    logger.info(
+                        "查询站点: %s (HDArea info_hash 通道, %d 个种子)",
+                        site_name,
+                        len(info_hashes),
+                    )
+                    hdarea_matches = await self._hdarea.query(site, info_hashes)
+                    results = []
+                    for match in hdarea_matches:
+                        pieces_hash = self._info_hash_index.get(match.info_hash)
+                        if not pieces_hash:
+                            continue
+                        if match.download_url:
+                            self._download_url_map[
+                                (site_name, match.torrent_id)
+                            ] = match.download_url
+                        results.append((pieces_hash, match.torrent_id))
+                else:
+                    logger.info(
+                        "查询站点: %s (%d 个种子)", site_name, len(site_hashes)
+                    )
+                    batches = [
+                        site_hashes[i : i + self._batch_size]
+                        for i in range(0, len(site_hashes), self._batch_size)
+                    ]
+                    results = await self._client.query_site_batched(site, batches)
 
-                batches = [
-                    site_hashes[i : i + self._batch_size]
-                    for i in range(0, len(site_hashes), self._batch_size)
-                ]
-
-                results = await self._client.query_site_batched(site, batches)
                 self._stats.site_details[site_name] = len(results)
                 logger.info("站点 %s 匹配到 %d 个种子", site_name, len(results))
                 if not results:
@@ -592,16 +643,50 @@ class ReseedEngine:
                     site_cfg = site_configs.get(site_name)
                     if not site_cfg:
                         continue
-                    dl_url = (
-                        f"{site_url}/download.php?id={torrent_id}"
-                        f"&passkey={site_cfg['passkey']}"
-                    )
+                    # HDArea 通道用接口签发的短效 dl_token 直链，无需 Cookie / passkey；
+                    # 通用通道仍按 passkey 拼接，行为不变。
+                    dl_url = self._download_url_map.get((site_name, torrent_id))
+                    if not dl_url:
+                        passkey = site_cfg.get("passkey")
+                        if not passkey:
+                            logger.warning(
+                                "站点 %s 既无短效下载链接也无 passkey，跳过 (id=%d)",
+                                site_name,
+                                torrent_id,
+                            )
+                            continue
+                        dl_url = (
+                            f"{site_url}/download.php?id={torrent_id}"
+                            f"&passkey={passkey}"
+                        )
 
                     torrent_data, error_reason = await self._client.try_download(
                         dl_url,
                         site_name=site_name,
                         torrent_id=torrent_id,
                     )
+                    # dl_token 有效期 1800 秒。查询与下载间隔过长时短效链接返回 403，
+                    # 用文档支持的 ?apikey= 直链重试一次，避免整站被误判为不可访问。
+                    if (
+                        not torrent_data
+                        and error_reason == "http_403"
+                        and is_hdarea_site(site_cfg)
+                        and site_cfg.get("api_key")
+                    ):
+                        logger.info(
+                            "站点 %s 短效链接失效，改用 API Key 直链 (id=%d)",
+                            site_name,
+                            torrent_id,
+                        )
+                        fallback_url = (
+                            f"{site_url}/download.php?id={torrent_id}"
+                            f"&apikey={site_cfg['api_key']}"
+                        )
+                        torrent_data, error_reason = await self._client.try_download(
+                            fallback_url,
+                            site_name=site_name,
+                            torrent_id=torrent_id,
+                        )
                     if not torrent_data:
                         if error_reason == "dead_cached":
                             # 已知死种(含持久化)，直接跳过，不计入失败

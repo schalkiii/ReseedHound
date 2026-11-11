@@ -97,3 +97,12 @@ cookiecloud:
   url: "http://127.0.0.1:8082/cookie"
   uuid: "your-uuid"
   password: "your-password"
+
+# === HDArea REST API 通道（可选）===
+# 仅当 sites.yaml 中存在 api_type: hdarea 的站点时生效。
+# 站点读取限流 60 次/分；request_interval 保证相邻批次间隔不低于该秒数，
+# concurrency 只限制在途响应数量，不会放大发送速率。
+# 每批固定最多 200 个 info_hash，是接口硬上限，不在此暴露为可调项。
+hdarea:
+  request_interval: 1.1
+  concurrency: 2

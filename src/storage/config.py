@@ -51,6 +51,12 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "enabled": False,
         "url": "http://127.0.0.1:8082/cookie",
     },
+    # HDArea REST API 读取限流 60 次/分。每批 200 个 info_hash 是接口硬约束，
+    # 不暴露为可配置项，见 src/network/hdarea.py 的 MAX_HASHES_PER_REQUEST。
+    "hdarea": {
+        "request_interval": 1.1,
+        "concurrency": 2,
+    },
     "sites": {"enabled": True},
 }
 
@@ -71,10 +77,12 @@ KNOWN_KEYS: dict[str, frozenset[str]] = {
         *DEFAULTS["jackett"], "retry_count", "retry_delay",
     }),
     "cookiecloud": frozenset({*DEFAULTS["cookiecloud"], "enable", "uuid", "password"}),
+    "hdarea": frozenset(DEFAULTS["hdarea"]),
 }
 
 KNOWN_SITE_KEYS = frozenset({
     "name", "url", "api_url", "passkey",
+    "api_type", "api_key",
     "enabled", "enable",
     "cookie", "cookies", "download_interval",
 })
@@ -241,7 +249,11 @@ class Config:
     def sites(self) -> list[dict]:
         result = []
         for s in self._sites.get("sites", []):
-            if not isinstance(s, dict) or not s.get("passkey"):
+            # pieces_hash 通道用 passkey，HDArea 的 info_hash 通道用 api_key；
+            # 两者皆无的站点没有可用凭据，静默跳过。
+            if not isinstance(s, dict) or not (
+                s.get("passkey") or s.get("api_key")
+            ):
                 continue
             # enable 优先（CHANGELOG 约定的历史写法），否则读 enabled；
             # 两者都缺省时默认启用。两种拼写都有效，避免静默参与辅种。

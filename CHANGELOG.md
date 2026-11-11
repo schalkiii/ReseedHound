@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-11-11 — HDArea REST API info_hash 辅种通道
+
+依据 HDArea `api_docs.php` §2.3 / §4 新增第三条辅种通道：按站点自动分流，
+`POST /api/v1/torrents/hashes` 一次最多传 200 个本地做种的 40 位 `info_hash`，
+毫秒级拿到站内种子 ID 与带 `dl_token` 的短效下载链接，零网页爬虫开销。
+
+### 新增
+- `src/network/hdarea.py`：`is_hdarea_site()` / `hashes_url()` / `split_batches()` /
+  `parse_hashes_response()` / `HdareaMatcher`。统一 envelope 校验、非法哈希过滤、
+  200 条硬上限分批；`X-API-Key` 经 `SiteClient.post_json(..., headers=...)` 传入，不污染通用请求。
+  读取限流 60 次/分，用全局节流锁保证相邻批次间隔，`concurrency` 只限制在途响应。
+- `src/engine/seeder.py`：查询阶段建立 `info_hash ↔ pieces_hash` 双向索引，`api_type: hdarea`
+  的站点走 info_hash 通道，其余站点继续走 `pieces_hash`；命中结果回落统一的片段级统计口径。
+  添加阶段优先用接口返回的 `download_url`，短效链接返回 `http_403` 时用 `?apikey=` 直链兜底一次。
+- `src/storage/config.py`：`DEFAULTS["hdarea"]`（`request_interval=1.1` / `concurrency=2`）、
+  `KNOWN_KEYS["hdarea"]`、`KNOWN_SITE_KEYS` 增补 `api_type` / `api_key`；`Config.sites`
+  改为「有 `passkey` 或有 `api_key`」才保留站点，避免只有 API Key 的站点被静默丢弃。
+- `config.example.yaml` / `sites.example.yaml`：HDArea 配置块与站点模板；README / AGENTS 新增
+  通道专节、字段说明与约定，并同步测试数量与目录树。
+
+### 实测（已登录浏览器上下文 + Python 直连）
+- API Key 有效、scope 为 `read/download/upload/user`；无命中时返回 `data={"count":0,"items":[]}`。
+- 用本地 `BT_backup` 前 200 个真实种子回查，命中 4 个（2%）——印证 `info_hash` 是
+  `pieces_hash` 匹配的子集：各站改写 info 字典，只有 info 完全一致才命中，召回率天然低于通用通道。
+- 短效 `download_url` 以 `credentials:'omit'`（不带 Cookie）请求返回
+  `HTTP 200 / application/x-bittorrent / 94008 bytes`，无需 passkey 或站点 Cookie。
+- 205 个真实种子的 `dry-run` E2E 通过：只查询不添加，临时目录内复制种子与配置，未改动本地凭据文件。
+
+### 安全
+- `src/utils/logger.py` 的 `redact_secrets()` 从只脱敏 `passkey=` 扩展为
+  `passkey=` / `api[_-]?key=` / `dl_token=` / `X-API-Key:` 四类统一打码，仍挂在文件与控制台两个 handler。
+- API Key 只从本地 `sites.yaml` 读取（`sites.yaml` 已 gitignore）；代码、模板与文档只用占位符。
+  API Key 与 tracker passkey 是两套独立凭据，下载时服务端会动态写入个人 passkey，不混用。
+
+### 测试与门禁
+- 新增 `tests/test_hdarea.py` **21 项**：分流判定、URL 推导、分批与非法哈希过滤、envelope 解析、
+  `X-API-Key` 发送、批次异常隔离、双通道引擎分流、短效链接优先与 403 兜底、旧站点仍用 `passkey=`、
+  四类凭据脱敏。全部用假客户端与 `tmp_path`，不依赖真实站点、不读取本地凭据。
+- 全量回归：`pytest tests/ -q` → **156 passed**（v1.1.0 的 135 项 + 新增 21 项）；
+  `flake8 src tests run.py scripts` → 0 错误。
+- 本次改动随 **`v1.2.0`** 发布；推送 `v*` 标签会触发 `.github/workflows/docker.yml`
+  构建并推送 GHCR 镜像（`1.2.0` / `1.2` / `latest`）。
+
 ## 2026-11-07 — 全面审计修复与文档一致性收口
 
 依据 `AUDIT-REPORT-2026-11-07.md` 的 60 条问题分阶段修复（功能 → 测试基线 → 架构 → 测试 → 工程/文档）。

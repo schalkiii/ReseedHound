@@ -9,11 +9,19 @@
 #   name              站点名称，也用于 --site 指定与报告展示
 #   url               站点主页，用于按 tracker 域名排除同站种子
 #   api_url           pieces_hash 查询接口（POST {"passkey": ..., "pieces_hash": [...]}）
-#   passkey           必填；为空的站点会被直接忽略
+#                     HDArea 通道填 https://hdarea.club/api/v1/torrents/hashes
+#   passkey           通用通道必填；为空的站点若同时没有 api_key 会被直接忽略
+#   api_type          可选，默认 pieces_hash；填 hdarea 时改走 info_hash 批量匹配通道
+#   api_key           HDArea 通道必填（32 位 API Key，走 X-API-Key 请求头），不需要 passkey
 #   enabled           是否启用（默认 true），false 可临时跳过
 #                     兼容历史写法 enable；两者同时出现时以 enable 为准
 #   cookie / cookies  可选，站点 Cookie；同时存在时优先 cookie
 #   download_interval 可选，覆盖 global.download_interval 的每域名下载间隔（秒）
+#
+# HDArea 通道说明：POST {"hashes": [...]} 一次最多 200 个 40 位 info_hash，
+# 响应 data.items[] 给出站内种子 id 与带 dl_token 的短效 download_url（有效期 1800 秒），
+# 下载种子无需 Cookie 与 passkey。该通道按 info_hash 精确匹配，是 pieces_hash 匹配的子集，
+# 召回率低于通用通道；详见 README「HDArea info_hash 辅种通道」。
 
 sites:
   - name: example_site
@@ -28,3 +36,12 @@ sites:
     passkey: your_passkey_here
     enabled: true
     download_interval: 10.0
+
+  # HDArea：REST API 批量 info_hash 匹配通道（凭据只从本文件读取，勿提交真实 Key）
+  - name: HDArea
+    url: https://hdarea.club
+    api_type: hdarea
+    api_url: https://hdarea.club/api/v1/torrents/hashes
+    api_key: your_32_char_api_key_here
+    enabled: true
+    download_interval: 5.0
