@@ -225,7 +225,8 @@ def format_report(matches: list[DeadMatch], total_local: int) -> str:
 def disable_sites_in_yaml(sites_path: str, names: list[str]) -> list[str]:
     """把指定站点写成 enabled: false（保留条目便于恢复）。返回实际改动的站点名。
 
-    用文本行插入而非 yaml 转储，避免丢注释与顺序；缩进按顶级列表条目（2 空格）。
+    用文本行处理而非 yaml 转储，避免丢注释与顺序；缩进按顶级列表条目（2 空格）。
+    若条目已有 enabled 键则就地改值，避免插入重复键（YAML 重复键取后者会导致禁用失效）。
     """
     if not names:
         return []
@@ -236,15 +237,36 @@ def disable_sites_in_yaml(sites_path: str, names: list[str]) -> list[str]:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     out: list[str] = []
     done: set[str] = set()
-    for line in lines:
-        out.append(line)
-        m = re.search(r"^\s*- name:\s*(.+?)\s*$", line)
-        if not m:
-            continue
-        name = m.group(1).strip().strip('"').strip("'")
-        if name in targets and name not in done:
+    current: str | None = None
+    current_has_enabled = False
+
+    def close_current() -> None:
+        # 条目结束：目标站点若还没有 enabled 行，补一条 false
+        if current in targets and current not in done and not current_has_enabled:
             out.append("  enabled: false\n")
-            done.add(name)
+            done.add(current)
+
+    for line in lines:
+        m = re.search(r"^\s*- name:\s*(.+?)\s*$", line)
+        if m:
+            close_current()
+            current = m.group(1).strip().strip('"').strip("'")
+            current_has_enabled = False
+            out.append(line)
+            continue
+
+        em = re.match(r"^(\s*)enabled\s*:\s*(.+?)\s*$", line)
+        if em and current in targets:
+            # 就地改值，不新增行，杜绝重复键
+            out.append(f"{em.group(1)}enabled: false\n")
+            current_has_enabled = True
+            done.add(current)
+            continue
+        if re.match(r"^\s*enabled\s*:", line):
+            current_has_enabled = True
+        out.append(line)
+
+    close_current()
     path.write_text("".join(out), encoding="utf-8")
     return sorted(done)
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-12 — v1.3.1 修复 check-dead 写配置的重复键 bug
+
+`check-dead --apply` 调用的 `disable_sites_in_yaml()` 只在站点条目 name 行后插入
+`enabled: false`；若条目本身已有 `enabled: true` 会形成重复键，YAML 解析取后者（true），
+导致**禁用实际不生效**（实测 52movie 命中 savept 死亡名单后仍是启用状态）。
+
+- 修复：条目已有 `enabled` 键时就地改值为 `false`，没有才插入，杜绝重复键。
+- 清理了受影响站点现存的重复 `enabled` 行。
+- 新增回归测试 `test_disable_sites_overwrites_existing_enabled_true`；全量 **190 passed**，`flake8` 0。
+- 本次改动随 **`v1.3.1`** 发布。
+
 ## 2026-11-12 — 失效站点禁用 + savept 死亡名单对照 + 凭据失效提醒 + 重试策略优化
 
 ### 配置：禁用 8 个失效站点

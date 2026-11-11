@@ -153,3 +153,21 @@ def test_disable_sites_in_yaml_inserts_enabled_false(tmp_path):
     assert text.count("enabled: false") == 2
     # 原有字段仍在，凭据未被改写
     assert "passkey: SECRET" in text
+
+
+def test_disable_sites_overwrites_existing_enabled_true(tmp_path):
+    """已有 enabled: true 时应就地改值，不能产生重复键（YAML 重复键取后者会禁用失效）。"""
+    p = tmp_path / "sites.yaml"
+    p.write_text(
+        "sites:\n"
+        "  - name: dup\n"
+        "    enabled: true\n"
+        "    url: https://dup.example\n",
+        encoding="utf-8",
+    )
+    changed = disable_sites_in_yaml(str(p), ["dup"])
+    assert changed == ["dup"]
+    text = Path(p).read_text(encoding="utf-8")
+    assert text.count("enabled:") == 1, "不应出现重复 enabled 键"
+    assert "enabled: false" in text
+    assert "enabled: true" not in text
