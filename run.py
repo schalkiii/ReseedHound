@@ -8,6 +8,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.cookie_sync import sync_cookies  # noqa: E402
+from src.network.savept import (  # noqa: E402
+    disable_sites_in_yaml,
+    fetch_dead_sites,
+    format_report,
+    load_local_sites,
+    match_local,
+)
 from src.runner import run_once  # noqa: E402
 from src.scheduler import ReseedScheduler  # noqa: E402
 from src.storage.config import Config  # noqa: E402
@@ -26,9 +33,10 @@ CLI_DEFAULTS = {
     "cookiecloud_url": None,
     "cookiecloud_uuid": None,
     "cookiecloud_password": None,
+    "savept_url": None,
 }
 
-COMMANDS = ("reseed", "schedule", "sync-cookies")
+COMMANDS = ("reseed", "schedule", "sync-cookies", "check-dead")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -118,6 +126,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="CookieCloud 解密密码（缺省读取 config.yaml 的 cookiecloud.password）",
     )
 
+    dead_parser = subparsers.add_parser(
+        "check-dead",
+        parents=[paths_only],
+        help="对照 savept.icu 死亡名单，推荐禁用已死亡站点",
+    )
+    dead_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="把命中的站点写入 sites.yaml（enabled: false）；缺省只打印建议不改配置",
+    )
+    dead_parser.add_argument(
+        "--savept-url",
+        type=str,
+        default=argparse.SUPPRESS,
+        help="savept 数据源地址（缺省读取 config.yaml 的 savept.url）",
+    )
+
     return parser
 
 
@@ -153,6 +178,44 @@ async def cmd_sync_cookies(args):
         password=password,
         sites_path=args.sites_path or "sites.yaml",
     )
+
+
+async def cmd_check_dead(args) -> int:
+    """对照 savept.icu 死亡名单，推荐禁用本地已死亡站点（默认只建议不改配置）。"""
+    config = Config(args.config, args.sites_path or "sites.yaml")
+    setup_logging(config, keep_runs=3)
+    logger = logging.getLogger("seedhound")
+    sites_path = args.sites_path or "sites.yaml"
+    base_url = args.savept_url or config.value("savept", "url")
+    timeout = config.value("savept", "timeout")
+
+    try:
+        local_sites = load_local_sites(sites_path, only_enabled=True)
+    except FileNotFoundError as exc:
+        logger.error("%s", exc)
+        return 1
+
+    logger.info(
+        "拉取 savept.icu 死亡名单并对照 %d 个启用中的本地站点...", len(local_sites)
+    )
+    dead_sites = await fetch_dead_sites(base_url=base_url, timeout=timeout)
+    matches = match_local(dead_sites, local_sites)
+
+    report = format_report(matches, len(local_sites))
+    print()
+    print(report)
+
+    if getattr(args, "apply", False) and matches:
+        changed = disable_sites_in_yaml(
+            sites_path, [m.local_name for m in matches]
+        )
+        if changed:
+            logger.info("已禁用 %d 个站点: %s", len(changed), "、".join(changed))
+        else:
+            logger.warning("没有站点被写入 enabled: false")
+    elif matches:
+        logger.info("以上仅为建议；确认后加 --apply 写入 sites.yaml")
+    return 0
 
 
 async def cmd_reseed(args, config: Config):
@@ -202,6 +265,9 @@ async def main():
 
     if args.command == "sync-cookies":
         return await cmd_sync_cookies(args)
+
+    if args.command == "check-dead":
+        return await cmd_check_dead(args)
 
     config = build_config(args)
     # scheduler.enabled=true 时，默认/显式 reseed 自动切换为定时运行（sync-cookies 不受影响）

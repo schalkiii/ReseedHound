@@ -106,3 +106,11 @@ cookiecloud:
 hdarea:
   request_interval: 1.1
   concurrency: 2
+
+# === savept.icu 死亡站点对照（可选，仅 check-dead 命令使用）===
+# python run.py check-dead 会拉取 savept.icu 的「已死亡」名单，
+# 对照本地 sites.yaml 里启用中的站点，输出禁用建议（默认不改配置）。
+# url: 数据源地址；timeout: 拉取超时（秒）。
+savept:
+  url: "https://savept.icu"
+  timeout: 20.0

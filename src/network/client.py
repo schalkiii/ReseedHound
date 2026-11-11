@@ -78,6 +78,27 @@ RATE_LIMIT_KEYWORDS = [
     "请稍候",
 ]
 
+# 这些 HTTP 状态码是「结果不可改变」的硬失败（凭据失效 / 接口不存在 / 资源永久移除），
+# 重试与退避只会白等，直接短路返回。
+NON_RETRYABLE_HTTP_STATUS = frozenset({401, 403, 404, 405, 410})
+
+# 这些异常消息同样代表硬失败：域名已死（DNS 解析失败）、证书已废（自签名/过期）。
+# 匹配用小写子串，避免 aiohttp 各版本错误文案差异。
+NON_RETRYABLE_ERROR_HINTS = (
+    "getaddrinfo failed",
+    "name or service not known",
+    "certificate verify failed",
+    "certificateverifyfailed",
+    "clientconnectorcertificateerror",
+    "ssl: certificate_verify_failed",
+)
+
+
+def _is_non_retryable_error(message: str) -> bool:
+    """判断异常消息是否为「重试也不会成功」的硬失败。"""
+    low = str(message).lower()
+    return any(hint in low for hint in NON_RETRYABLE_ERROR_HINTS)
+
 
 def _parse_rate_limit_response(data: bytes, content_type: str) -> Optional[float]:
     if len(data) > 10000:
@@ -353,10 +374,18 @@ class SiteClient:
         data: dict,
         retries: int = 1,
         headers: Optional[dict[str, str]] = None,
+        label: str = "",
     ) -> Optional[dict]:
-        """POST JSON；headers 用于 X-API-Key 这类按站点区分的鉴权头。"""
+        """POST JSON；headers 用于 X-API-Key 这类按站点区分的鉴权头。
+
+        label 是批次上下文（如「第 3/43 批」），只影响日志，用来把「批次」和「单次重试」分开看。
+        硬失败（404/405/410/401/403、DNS 失败、证书错误、200 但返回 HTML）不会重试。
+        """
+        suffix = f" [{label}]" if label else ""
         last_error = ""
+        attempts = 0
         for attempt in range(retries):
+            attempts = attempt + 1
             try:
                 async with self._semaphore:
                     async with self._session.post(
@@ -368,9 +397,23 @@ class SiteClient:
                         if resp.status == 200:
                             if attempt > 0:
                                 logger.info(
-                                    "请求成功 %s (第 %d 次重试后恢复)", url, attempt
+                                    "请求成功 %s%s (第 %d 次重试后恢复)",
+                                    url,
+                                    suffix,
+                                    attempt,
                                 )
-                            return await resp.json()
+                            try:
+                                return await resp.json()
+                            except aiohttp.ContentTypeError:
+                                # HTTP 200 但不是 JSON：常见于表单错误页 / 登录跳转页，
+                                # 重试永远不会得到 JSON，直接判定为独立错误类型。
+                                logger.warning(
+                                    "请求失败 %s%s (html_invalid_response: "
+                                    "HTTP 200 但返回 HTML/非 JSON，可能是表单错误页或需登录，不重试)",
+                                    url,
+                                    suffix,
+                                )
+                                return None
                         if resp.status == 429:
                             retry_after = resp.headers.get("Retry-After", "5")
                             # Retry-After 也可能是 HTTP-date，无法直接转 float
@@ -381,27 +424,46 @@ class SiteClient:
                             await asyncio.sleep(delay)
                             continue
                         last_error = f"HTTP {resp.status}"
+                        if resp.status in NON_RETRYABLE_HTTP_STATUS:
+                            logger.warning(
+                                "请求失败 %s%s (%s，硬失败不重试)",
+                                url,
+                                suffix,
+                                last_error,
+                            )
+                            return None
                         logger.debug(
-                            "%s from %s (attempt %d/%d)",
+                            "%s from %s%s (attempt %d/%d)",
                             last_error,
                             url,
+                            suffix,
                             attempt + 1,
                             retries,
                         )
             except asyncio.TimeoutError:
                 last_error = "timeout"
                 logger.debug(
-                    "请求超时 %s (attempt %d/%d)",
+                    "请求超时 %s%s (attempt %d/%d)",
                     url,
+                    suffix,
                     attempt + 1,
                     retries,
                 )
             except aiohttp.ClientError as e:
                 last_error = str(e).strip() or type(e).__name__
+                if _is_non_retryable_error(last_error):
+                    logger.warning(
+                        "请求失败 %s%s (%s，硬失败不重试)",
+                        url,
+                        suffix,
+                        last_error,
+                    )
+                    return None
                 logger.debug(
-                    "请求错误 %s: %s (attempt %d/%d)",
+                    "请求错误 %s: %s%s (attempt %d/%d)",
                     url,
                     last_error,
+                    suffix,
                     attempt + 1,
                     retries,
                 )
@@ -410,10 +472,17 @@ class SiteClient:
                 logger.debug("等待 %.1f 秒后重试 %s", delay, url)
                 await asyncio.sleep(delay)
 
-        logger.warning("请求失败 %s (%s, 共尝试 %d 次)", url, last_error, retries)
+        logger.warning(
+            "请求失败 %s%s (%s, 共尝试 %d 次)", url, suffix, last_error, attempts
+        )
         return None
 
-    async def query_site(self, site: dict, pieces_hashes: list[str]) -> Optional[dict]:
+    async def query_site(
+        self,
+        site: dict,
+        pieces_hashes: list[str],
+        label: str = "",
+    ) -> Optional[dict]:
         data = {
             "passkey": site["passkey"],
             "pieces_hash": pieces_hashes,
@@ -422,6 +491,7 @@ class SiteClient:
             site["api_url"],
             data,
             retries=self._retry_count,
+            label=label,
         )
 
     async def query_site_batched(
@@ -439,13 +509,15 @@ class SiteClient:
         total_batches = len(pieces_batches)
         site_name = site.get("name", "")
 
-        async def query_one(batch: list[str]):
+        async def query_one(batch_index: int, batch: list[str]):
             if site_dead.is_set():
                 return
+            # label 只用于日志，把「第几批」和「单次请求的重试次数」分开看
+            label = f"第 {batch_index + 1}/{total_batches} 批"
             async with sem:
                 if site_dead.is_set():
                     return
-                response = await self.query_site(site, batch)
+                response = await self.query_site(site, batch, label=label)
                 if response is None:
                     batch_failed[0] += 1
                     consecutive_failures[0] += 1
@@ -479,7 +551,7 @@ class SiteClient:
                         except (ValueError, TypeError):
                             pass
 
-        tasks = [query_one(batch) for batch in pieces_batches]
+        tasks = [query_one(i, batch) for i, batch in enumerate(pieces_batches)]
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)
         for failure in batch_results:
             if isinstance(failure, Exception):

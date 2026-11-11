@@ -21,6 +21,19 @@ logger = logging.getLogger("seedhound")
 # completed 是 Transmission 侧的状态取值。
 STOPPED_COMPLETE_STATES = ("pausedUP", "stoppedUP", "completed")
 
+# 凭据类错误：passkey / Cookie 失效、权限不足、需要重新登录。
+# 这类不是网络抖动，重试无效，应在报告后提醒用户更新凭据。
+CREDENTIAL_ERRORS = frozenset(
+    {
+        "http_401",
+        "http_403",
+        "html_permission_denied",
+        "html_forbidden",
+        "html_auth_required",
+        "auth_redirect",
+    }
+)
+
 
 @dataclass
 class ReseedStats:
@@ -38,6 +51,8 @@ class ReseedStats:
     site_succeeded: dict = field(default_factory=dict)
     site_failed: dict = field(default_factory=dict)
     failed_sites: list = field(default_factory=list)
+    # 站点名 -> 凭据类错误原因（passkey/Cookie 失效等），供飞书「更新凭据」提醒使用
+    credential_failures: dict = field(default_factory=dict)
     start_time: float = 0.0
     end_time: float = 0.0
 
@@ -709,6 +724,11 @@ class ReseedEngine:
                                         site_timeout_errors[site_name],
                                     )
                         elif error_reason in SERIOUS_ERRORS:
+                            if error_reason in CREDENTIAL_ERRORS:
+                                # 记录首个凭据类原因，供飞书「去更新凭据」提醒使用
+                                self._stats.credential_failures.setdefault(
+                                    site_name, error_reason
+                                )
                             site_serious_errors[site_name] = (
                                 site_serious_errors.get(site_name, 0) + 1
                             )

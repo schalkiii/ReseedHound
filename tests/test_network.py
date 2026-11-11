@@ -77,7 +77,7 @@ def _make_client_with_responses(responses):
     client = SiteClient.__new__(SiteClient)
     queue = list(responses)
 
-    async def fake_query_site(site, batch):
+    async def fake_query_site(site, batch, label=""):
         item = queue.pop(0)
         if isinstance(item, Exception):
             raise item

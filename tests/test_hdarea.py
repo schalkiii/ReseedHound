@@ -129,7 +129,7 @@ class FakePostClient:
         self.responses = responses or []
         self.fail_on = fail_on
 
-    async def post_json(self, url, data, retries=1, headers=None):
+    async def post_json(self, url, data, retries=1, headers=None, label=""):
         self.calls.append((url, data, headers))
         index = len(self.calls) - 1
         if self.fail_on == index:

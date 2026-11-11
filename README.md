@@ -492,7 +492,8 @@ python run.py schedule
 | `reseed`           | 子命令：一次性辅种（默认）                              |
 | `schedule`         | 子命令：按 `scheduler` 配置循环定时运行辅种引擎         |
 | `sync-cookies`     | 子命令：从 CookieCloud 同步 Cookie 到 `sites.yaml`      |
-| `SEEDHOUND_MODE`   | 容器无子命令时选择运行模式，值同上三个子命令            |
+| `check-dead`       | 子命令：对照 savept.icu 死亡名单推荐禁用站点（`--apply` 才写配置） |
+| `SEEDHOUND_MODE`   | 容器无子命令时选择运行模式，值为 `reseed` / `schedule` / `sync-cookies` |
 
 公共开关在子命令前后都生效，例如 `python run.py --dry-run reseed` 与 `python run.py reseed --dry-run` 等价。
 
@@ -591,6 +592,49 @@ python scripts/weekly_report.py --clean --keep-days 30 --apply   # 真正截断
 ```
 
 清理默认 dry-run，只有加 `--apply` 才会改写日志文件。
+
+### 检查失效站点（check-dead）
+
+站点关站/换域名后，本地配置里的条目会一直失败、白耗请求。`check-dead` 用
+[savept.icu](https://savept.icu)（PT 监护室）的公开「已死亡」名单对照本地站点，
+**只输出禁用建议，默认不改配置**：
+
+```bash
+python run.py check-dead                 # 打印建议清单
+python run.py check-dead --apply         # 确认后把命中站点写成 enabled: false
+python run.py check-dead --savept-url https://savept.icu   # 覆盖数据源
+```
+
+匹配按「域名 → 注册域 → 站点名/别名」三级，置信度 `high`（域名对得上，可直接禁用）与
+`medium`（仅名称一致，多为站点换域名，建议人工核对）。数据源在 `config.yaml` 的 `savept`
+块配置（`url` / `timeout`）。已 `enabled: false` 的站点不会重复推荐。
+
+### 凭据失效提醒
+
+passkey / Cookie 失效会导致下载被拒（`http_401` / `http_403` / `auth_required` 等）。一轮辅种结束后，
+若有站点命中凭据类错误，飞书会**额外推送一条红色提醒卡片**，列出站点、错误原因与更新指引
+（到站点重拿 passkey，或跑 `python run.py sync-cookies`）。用 `--no-feishu` 可一并跳过。
+
+凭据类错误（`CREDENTIAL_ERRORS`）与网络抖动分开统计：前者重试无效、要更新凭据；后者（超时 / 5xx / 限流）按重试策略处理。
+
+### 重试策略与日志
+
+查询请求的重试按错误性质分流，避免对「改不了的结果」白试：
+
+| 错误类型 | 例子 | 行为 |
+| --- | --- | --- |
+| 硬失败 | `HTTP 404/405/410/401/403`、`getaddrinfo failed`（域名已死）、`certificate verify failed`（证书已废） | **不重试**，直接返回 |
+| HTML 响应 | `HTTP 200` 但返回表单错误页/登录页（非 JSON） | 记为 `html_invalid_response`，**不重试** |
+| 临时故障 | 超时、5xx、连接错误、`429` 限流 | 按 `retry_count` / `Retry-After` 重试 |
+
+失败日志把「批次」和「重试」分开标注：
+
+```
+请求失败 https://ptchina.org/api/pieces-hash [第 1/43 批] (HTTP 404，硬失败不重试)
+请求失败 https://xxx [第 3/43 批] (HTTP 502, 共尝试 2 次)
+```
+
+`[第 X/Y 批]` 是该站点的第几个查询批次；`共尝试 N 次` 是单次请求内部的重试次数。
 
 ## 辅种方法学
 
@@ -829,7 +873,7 @@ yarl>=1.9.0
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
 python -m flake8 src tests run.py       # 0 错误
-python -m pytest tests/ -q              # 当前 156 项用例全绿（含 HDArea 专项 21 项）
+python -m pytest tests/ -q              # 当前 189 项用例全绿（含 HDArea 21、savept/重试/凭据 33 项）
 ```
 
 `.github/workflows/ci.yml` 在 push / PR 上以 Python 3.11 / 3.13 矩阵自动执行这两条门禁。

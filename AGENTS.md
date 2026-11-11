@@ -17,7 +17,8 @@ python run.py reseed                    # 一次性辅种
 python run.py reseed --dry-run          # 只查询不添加（改动前先跑这个）
 python run.py schedule                  # 按 config 中 scheduler 循环运行
 python run.py sync-cookies              # 单独同步 CookieCloud
-python -m pytest tests/ -q              # 156 项用例（含 test_hdarea.py 21 项）
+python run.py check-dead                # 对照 savept.icu 死亡名单，推荐禁用失效站点（--apply 才写）
+python -m pytest tests/ -q              # 189 项用例（含 test_hdarea.py 21、savept/重试/凭据 33 项）
 python -m flake8 src tests run.py       # 门禁：max-line-length=120（见 .flake8）
 ```
 
@@ -44,7 +45,8 @@ Python 3.11+（Docker 镜像 3.11，CI 覆盖 3.11 / 3.13）+ asyncio；
 | `src/engine/seeder.py` | 三阶段流水线：扫描 → 查询 → 添加；按 `api_type` 分流 HDArea / 通用通道；统计与站点跳过 |
 | `src/engine/downloader.py` | 下载器抽象层；`_is_add_success` 兼容不同 WebAPI 返回体；`add_torrent` 签名是接口契约 |
 | `src/engine/jackett.py` / `src/engine/parser.py` | Jackett 搜索与尺寸过滤 / `.torrent` → info_hash、pieces_hash |
-| `src/network/client.py` / `src/network/hdarea.py` | 站点 HTTP 与错误码（`post_json` 支持自定义头）/ HDArea `info_hash` 批量匹配与全局节流 |
+| `src/network/client.py` / `src/network/hdarea.py` | 站点 HTTP 与错误码（`post_json` 支持自定义头 + label）/ HDArea `info_hash` 批量匹配与全局节流 |
+| `src/network/savept.py` | savept.icu 死亡名单拉取与本地站点对照（`check-dead` 用，只取 name/url 不碰凭据） |
 | `src/network/cookiecloud.py` | CookieCloud 解密与域名匹配 |
 | `src/storage/cache.py` | 增量缓存、辅种记录、死种持久化；`reseed_history` 有唯一索引 |
 | `src/report/generator.py` / `src/report/site_table.py` | 报告排版 / **站点表统一口径**（行、四档状态灯、按成功率排序、截断） |
@@ -98,6 +100,22 @@ Python 3.11+（Docker 镜像 3.11，CI 覆盖 3.11 / 3.13）+ asyncio；
 - **默认值只在 `DEFAULTS["hdarea"]`**：`request_interval` / `concurrency` 经 `Config.value()`
   注入，改动须同步 `config.example.yaml` 与 README 的 HDArea 专节。
 
+## 重试与站点失效约定
+
+- **硬失败不重试**：404/405/410/401/403 等状态码，以及 `getaddrinfo failed`（域名已死）、
+  `certificate verify failed`（证书已废）类异常，一律直接返回；重试与退避只会白等。
+  只有超时/5xx/连接错误/429 限流才按 `retry_count` 重试。改重试策略要同步
+  `NON_RETRYABLE_HTTP_STATUS` / `NON_RETRYABLE_ERROR_HINTS` 与 `tests/test_retry_policy.py`。
+- **200 但非 JSON 单独归类**：表单错误页 / 登录跳转记为 `html_invalid_response`，不重试，
+  不要混进网络错误里反复试。
+- **日志区分批次与重试**：`post_json(..., label="第 X/Y 批")`，失败日志形如
+  `[第 X/Y 批] (HTTP 404，硬失败不重试)`；改日志文案时保持「批次」与「共尝试 N 次」语义分开。
+- **凭据失效要提醒不要静默**：`CREDENTIAL_ERRORS`（401/403/permission/forbidden/auth）计入
+  `ReseedStats.credential_failures`，由 `FeishuNotifier.send_credential_alert()` 单独推送；
+  新增凭据类错误码要同步补进该集合与 `tests/test_credential.py`。
+- **`check-dead` 只推荐不自动改配置**：写入必须显式 `--apply`；匹配用域名 → 注册域 → 名称三级，
+  `medium` 置信度（域名不同）必须留给人工核对，别自动禁用。
+
 ## 当前状态
 
 - 生产下载器：qBittorrent v5.3.0 / WebAPI 2.16.2，约 4.1 万种子（地址见本地 `config.yaml`，不写入仓库）。
@@ -109,3 +127,6 @@ Python 3.11+（Docker 镜像 3.11，CI 覆盖 3.11 / 3.13）+ asyncio；
 - 2026-11-11 新增 HDArea REST API `info_hash` 辅种通道（`src/network/hdarea.py` +
   `tests/test_hdarea.py`）；测试由 135 项扩到 **156 项**，`flake8` 0 错误；
   Python 直连与 205 个真实种子的 dry-run E2E 均已验证。
+- 2026-11-12 禁用 8 个失效站点（昆仑/传道院/raingfh/星陨阁/伞/a4apt/Moment/cdfile）；
+  新增 `check-dead`（对照 savept.icu 死亡名单推荐禁用）与凭据失效飞书提醒；优化重试策略
+  （硬失败不重试、HTML 响应归类、日志区分批次/重试）。测试扩到 **189 项**，`flake8` 0 错误。

@@ -30,6 +30,12 @@ async def run_once(config: Config, args) -> int:
             if feishu:
                 logger.info("推送报告到飞书...")
                 await feishu.send_report_card(stats)
+                if stats.credential_failures:
+                    logger.info(
+                        "推送凭据失效提醒到飞书（%d 个站点）...",
+                        len(stats.credential_failures),
+                    )
+                    await feishu.send_credential_alert(stats.credential_failures)
     except Exception as exc:
         logger.error("辅种引擎运行异常: %s", exc, exc_info=True)
         return 1

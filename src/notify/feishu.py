@@ -36,6 +36,36 @@ class FeishuNotifier:
         }
         return await self._send(payload)
 
+    async def send_credential_alert(self, failures: dict) -> bool:
+        """凭据失效提醒：列出站点与原因，提示更新 passkey / Cookie。"""
+        if not failures:
+            return False
+        lines = [
+            f"- **{site_name}**：`{reason}`"
+            for site_name, reason in sorted(failures.items())
+        ]
+        content = (
+            "**⚠️ 凭据失效提醒**\n\n"
+            "以下站点的 passkey / Cookie 已失效或权限不足，辅种下载被拒。"
+            "请到站点重新获取凭据（或运行 `python run.py sync-cookies` 同步 Cookie）：\n\n"
+            + "\n".join(lines)
+            + f"\n\n共 **{len(failures)}** 个站点需要更新凭据。"
+        )
+        payload = {
+            "msg_type": "interactive",
+            "card": {
+                "header": {
+                    "title": {
+                        "tag": "plain_text",
+                        "content": "SeedHound 凭据失效提醒",
+                    },
+                    "template": "red",
+                },
+                "elements": [{"tag": "markdown", "content": content}],
+            },
+        }
+        return await self._send(payload)
+
     def _build_card_elements(self, stats) -> list[dict]:
         elements = []
 

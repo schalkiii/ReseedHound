@@ -141,7 +141,8 @@ class HdareaMatcher:
         if not batches:
             return []
 
-        async def query_one(batch: list[str]) -> list[HdareaMatch]:
+        async def query_one(batch_index: int, batch: list[str]) -> list[HdareaMatch]:
+            label = f"第 {batch_index + 1}/{len(batches)} 批"
             async with self._semaphore:
                 await self._throttle()
                 response = await self._client.post_json(
@@ -149,11 +150,13 @@ class HdareaMatcher:
                     {"hashes": batch},
                     retries=self._retry_count,
                     headers=headers,
+                    label=label,
                 )
                 return parse_hashes_response(response)
 
         batch_results = await asyncio.gather(
-            *(query_one(batch) for batch in batches), return_exceptions=True
+            *(query_one(i, batch) for i, batch in enumerate(batches)),
+            return_exceptions=True,
         )
 
         matches: list[HdareaMatch] = []

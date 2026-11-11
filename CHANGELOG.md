@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-11-12 — 失效站点禁用 + savept 死亡名单对照 + 凭据失效提醒 + 重试策略优化
+
+### 配置：禁用 8 个失效站点
+`昆仑`、`传道院`、`raingfh`、`星陨阁`、`伞`、`a4apt`、`Moment`、`cdfile` 标记
+`enabled: false`（保留条目便于恢复）。依据 13 轮日志全 0 成功 + 只读探测定性
+（DNS 解析失败 / 自签名证书 / API 404-405 持续）。
+
+### 新增：`check-dead` 对照 savept.icu 死亡名单并推荐禁用
+- 新模块 `src/network/savept.py`：拉取 `savept.icu/api/history/dead`（分页 JSON），
+  与本地 `sites.yaml` 启用中的站点对照，按域名 → 注册域 → 站点名/别名三级匹配。
+- 匹配置信度：域名/注册域一致为 `high`（可直接禁用）；仅名称/别名一致为 `medium`
+  （多为站点换域名，建议人工核对）。
+- CLI：`python run.py check-dead` **只打印建议不改配置**；确认后加 `--apply` 才写入
+  `enabled: false`。可用 `--savept-url` 覆盖数据源，或在 `config.yaml` 的 `savept` 块配置。
+- `load_local_sites()` 只取 name/url、不触碰任何凭据；`disable_sites_in_yaml()` 用文本行插入
+  保留注释与顺序。
+- 实测：对照 67 个启用站点命中 3 个（52movie / ptlao / 铂金学院，均 high 置信）。
+
+### 新增：凭据失效提醒推送
+- 新错误集合 `CREDENTIAL_ERRORS`（`http_401`/`http_403`/`html_permission_denied`/
+  `html_forbidden`/`html_auth_required`/`auth_redirect`），与网络抖动区分。
+- 引擎记录 `ReseedStats.credential_failures`（站点 → 首个凭据类原因）；
+  一轮结束若非空，飞书新增独立红色卡片 `send_credential_alert()`，列出站点、原因
+  与更新指引（重拿 passkey 或 `sync-cookies`）。
+
+### 优化：重试策略与日志（O1/O2/O3）
+- **O1 硬失败不重试**：404/405/410/401/403 等状态码，以及 `getaddrinfo failed`（域名已死）、
+  `certificate verify failed`（证书已废）类异常，直接短路返回，不再按 `retry_count` 白试。
+  429 限流与 5xx/超时仍按原策略重试。
+- **O2 HTTP 200 但返回 HTML 单独归类**：响应非 JSON（表单错误页/登录跳转）时记为
+  `html_invalid_response` 并不重试，不再混进网络错误里反复重试。
+- **O3 日志区分「批次」与「重试」**：失败日志带上 `[第 X/Y 批]`，`共尝试 N 次`只表示单请求
+  内部尝试次数。示例：`请求失败 https://... [第 1/43 批] (HTTP 404，硬失败不重试)`。
+  HDArea 通道批次同样标注。
+
+### 测试与门禁
+- 新增 `tests/test_savept.py`（归一化/解析/匹配/配置写入）、`tests/test_retry_policy.py`
+  （硬失败不重试、HTML 归类、批次号日志）、`tests/test_credential.py`（错误集合与飞书卡片）。
+- 全量回归：`pytest tests/ -q` → **189 passed**（v1.2.0 的 156 项 + 新增 33 项）；
+  `flake8 src tests run.py scripts` → 0 错误。
+- 本次改动随 **`v1.3.0`** 发布；推送 `v*` 标签会触发 `.github/workflows/docker.yml`
+  构建并推送 GHCR 镜像（`1.3.0` / `1.3` / `latest`）。
+
 ## 2026-11-11 — HDArea REST API info_hash 辅种通道
 
 依据 HDArea `api_docs.php` §2.3 / §4 新增第三条辅种通道：按站点自动分流，

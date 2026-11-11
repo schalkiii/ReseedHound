@@ -57,6 +57,11 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "request_interval": 1.1,
         "concurrency": 2,
     },
+    # savept.icu（PT监护室）死亡站点对照：仅 check-dead 命令使用
+    "savept": {
+        "url": "https://savept.icu",
+        "timeout": 20.0,
+    },
     "sites": {"enabled": True},
 }
 
@@ -78,6 +83,7 @@ KNOWN_KEYS: dict[str, frozenset[str]] = {
     }),
     "cookiecloud": frozenset({*DEFAULTS["cookiecloud"], "enable", "uuid", "password"}),
     "hdarea": frozenset(DEFAULTS["hdarea"]),
+    "savept": frozenset(DEFAULTS["savept"]),
 }
 
 KNOWN_SITE_KEYS = frozenset({
