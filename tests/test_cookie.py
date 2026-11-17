@@ -32,6 +32,31 @@ def test_cookiecloud_decrypt_roundtrip():
     assert client._decrypt(encrypted) == payload
 
 
+def _fixed_iv_encrypt(plaintext: bytes, uuid: str, password: str) -> str:
+    """按 CookieCloud aes-128-cbc-fixed 规则生成密文（key=口令16字节，IV 全 0）。"""
+    crypto_key = hashlib.md5(f"{uuid}-{password}".encode()).hexdigest()[:16].encode()
+    cipher = AES.new(crypto_key, AES.MODE_CBC, bytes(16))
+    ciphertext = cipher.encrypt(pad(plaintext, AES.block_size))
+    return base64.b64encode(ciphertext).decode()
+
+
+def test_cookiecloud_decrypt_fixed_iv():
+    payload = {"cookie_data": {"example.com": [{"name": "a", "value": "1"}]}}
+    encrypted = _fixed_iv_encrypt(json.dumps(payload).encode(), "uid", "pwd")
+    client = CookieCloudClient("http://cc", "uid", "pwd")
+    # 显式 crypto_type
+    assert client._decrypt(encrypted, "aes-128-cbc-fixed") == payload
+    # 服务端未标类型且无 Salted__ 头 -> 自动识别
+    assert client._decrypt(encrypted) == payload
+
+
+def test_cookiecloud_decrypt_fixed_iv_wrong_password():
+    encrypted = _fixed_iv_encrypt(b'{"cookie_data": {}}', "uid", "right")
+    client = CookieCloudClient("http://cc", "uid", "wrong")
+    with pytest.raises(ValueError):
+        client._decrypt(encrypted, "aes-128-cbc-fixed")
+
+
 def test_cookiecloud_decrypt_rejects_unknown_format():
     client = CookieCloudClient("http://cc", "uid", "pwd")
     with pytest.raises(ValueError, match="不支持的加密格式"):
@@ -80,12 +105,16 @@ async def test_fetch_cookies_normalizes_leading_dot(monkeypatch):
 
     client = CookieCloudClient("http://cc", "uid", "pwd")
     client._session = Session()
-    monkeypatch.setattr(CookieCloudClient, "_decrypt", lambda self, data: {
+    monkeypatch.setattr(
+        CookieCloudClient,
+        "_decrypt",
+        lambda self, data, *args, **kwargs: {
         "cookie_data": {
             ".example.com": [{"name": "a", "value": "1"}],
             "invalid": "not a list",
         },
-    })
+    },
+    )
     assert await client.fetch_cookies() == {
         "example.com": [{"name": "a", "value": "1"}],
     }

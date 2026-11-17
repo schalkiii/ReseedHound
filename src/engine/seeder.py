@@ -489,8 +489,11 @@ class ReseedEngine:
             )
 
         site_sem = asyncio.Semaphore(self._config.value("global", "concurrency"))
+        site_total = len(sites)
+        site_done = 0
 
         async def query_one_site(site: dict):
+            nonlocal site_done
             async with site_sem:
                 site_name = site["name"]
                 exclude = site_exclude.get(site_name, set())
@@ -529,7 +532,14 @@ class ReseedEngine:
                     results = await self._client.query_site_batched(site, batches)
 
                 self._stats.site_details[site_name] = len(results)
-                logger.info("站点 %s 匹配到 %d 个种子", site_name, len(results))
+                site_done += 1
+                logger.info(
+                    "[阶段2] 站点进度 %d/%d · %s 匹配 %d",
+                    site_done,
+                    site_total,
+                    site_name,
+                    len(results),
+                )
                 if not results:
                     self._stats.failed_sites.append(site_name)
                 return (site, results)
@@ -811,6 +821,15 @@ class ReseedEngine:
                                     new_info_hash, entry["file_name"], site_name
                                 )
                     else:
+                        # 下载 .torrent 已消耗站点下载配额，添加失败必须显式记录，
+                        # 否则表现为「配额被消耗但 qB 里没有」却无从追查
+                        logger.warning(
+                            "添加失败（已消耗 %s 下载配额）: %s (id=%d, save_path=%s)",
+                            site_name,
+                            entry["file_name"],
+                            torrent_id,
+                            dl_info.get("save_path"),
+                        )
                         piece_failed += 1
                         piece_failed_by_site[site_name] = (
                             piece_failed_by_site.get(site_name, 0) + 1
@@ -824,7 +843,19 @@ class ReseedEngine:
                             self._stats.site_failed.get(site, 0) + cnt
                         )
 
-        tasks = [add_one(ph, matches) for ph, matches in self._match_map.items()]
+        add_total = len(self._match_map)
+        add_done = 0
+
+        async def add_one_tracked(ph: str, matches: list):
+            nonlocal add_done
+            try:
+                await add_one(ph, matches)
+            finally:
+                add_done += 1
+                if add_done % 50 == 0 or add_done == add_total:
+                    logger.info("[阶段3] 进度 %d/%d 颗种子", add_done, add_total)
+
+        tasks = [add_one_tracked(ph, matches) for ph, matches in self._match_map.items()]
         add_results = await asyncio.gather(*tasks, return_exceptions=True)
         for failure in add_results:
             if isinstance(failure, Exception):

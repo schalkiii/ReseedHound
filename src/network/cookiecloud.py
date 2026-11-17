@@ -33,8 +33,14 @@ class CookieCloudClient:
         if self._session:
             await self._session.close()
 
-    def _decrypt(self, encrypted_b64: str) -> dict:
+    def _decrypt(self, encrypted_b64: str, crypto_type: str = "") -> dict:
         raw = base64.b64decode(encrypted_b64)
+        # CookieCloud 0.3.0 起支持 aes-128-cbc-fixed：key = 16 位口令的 UTF-8 字节，
+        # IV 全 0，密文为纯 Base64（无 Salted__ 头）。服务端未标类型时按头识别。
+        if crypto_type == "aes-128-cbc-fixed" or (
+            not crypto_type and raw[:8] != b"Salted__"
+        ):
+            return self._decrypt_fixed_iv(raw)
         if raw[:8] != b"Salted__":
             raise ValueError("不支持的加密格式")
         salt = raw[8:16]
@@ -52,6 +58,14 @@ class CookieCloudClient:
         plaintext = unpad(cipher.decrypt(ciphertext), AES.block_size)
         return json.loads(plaintext.decode("utf-8"))
 
+    def _decrypt_fixed_iv(self, raw: bytes) -> dict:
+        """aes-128-cbc-fixed：key = 16 位口令 UTF-8 字节，IV 全 0。"""
+        if not raw or len(raw) % AES.block_size != 0:
+            raise ValueError("不支持的加密格式")
+        cipher = AES.new(self._crypto_key, AES.MODE_CBC, b"\x00" * 16)
+        plaintext = unpad(cipher.decrypt(raw), AES.block_size)
+        return json.loads(plaintext.decode("utf-8"))
+
     async def fetch_cookies(self) -> dict[str, list[dict]]:
         url = f"{self._base_url}/get/{self._uuid}"
         params = {"password": self._password}
@@ -65,7 +79,7 @@ class CookieCloudClient:
                 if not encrypted:
                     logger.error("CookieCloud 返回数据中没有 encrypted 字段")
                     return {}
-                decrypted = self._decrypt(encrypted)
+                decrypted = self._decrypt(encrypted, data.get("crypto_type", ""))
                 cookies_by_domain: dict[str, list[dict]] = {}
                 cookie_data = decrypted.get("cookie_data", {})
                 for domain, cookies in cookie_data.items():
