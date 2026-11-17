@@ -265,7 +265,7 @@ class ReseedEngine:
             raise ValueError(
                 "downloader.torrent_dir 未配置：请在 config.yaml 中填写种子文件目录"
             )
-        torrents = await TorrentParser.scan_directory(torrent_dir)
+        torrents = await TorrentParser.scan_directory(torrent_dir, cache=self._cache)
         self._stats.total_torrents = len(torrents)
 
         uncached = await self._cache.filter_uncached(torrents)

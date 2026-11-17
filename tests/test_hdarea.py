@@ -150,6 +150,15 @@ class FakeHdareaMatcher:
 
 
 class FakeCache:
+    async def lookup_file_cache(self, keys):
+        return {}
+
+    async def store_file_cache(self, entries):
+        return None
+
+    async def prune_file_cache(self, keep):
+        return 0
+
     async def get_reseeded_hashes_by_site(self, hashes):
         return {}
 

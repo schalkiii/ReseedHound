@@ -34,6 +34,20 @@ class TorrentCache:
                 ON pieces_cache(pieces_hash)
             """)
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS file_cache (
+                    path TEXT PRIMARY KEY,
+                    mtime INTEGER NOT NULL,
+                    size INTEGER NOT NULL,
+                    info_hash TEXT NOT NULL,
+                    pieces_hash TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    torrent_name TEXT,
+                    total_size INTEGER,
+                    announce TEXT,
+                    announce_list TEXT
+                )
+            """)
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS dead_torrents (
                     site_name TEXT NOT NULL,
                     torrent_id INTEGER NOT NULL,
@@ -93,6 +107,95 @@ class TorrentCache:
                     [(e["pieces_hash"], e["info_hash"], e["file_name"]) for e in entries],
                 )
                 await db.commit()
+
+    async def lookup_file_cache(self, keys: list[tuple[str, int, int]]) -> dict:
+        """批量查询文件级解析缓存（path + mtime + size 一致才命中）。
+
+        命中可跳过「读文件 + bencode 解析 + 算 pieces_hash」，与 Rust 版同口径。
+        """
+        import json as _json
+
+        out: dict = {}
+        async with self._lock:
+            async with aiosqlite.connect(str(self._db_path)) as db:
+                for batch_start in range(0, len(keys), 900):
+                    batch = keys[batch_start : batch_start + 900]
+                    identity = {p: (m, s) for p, m, s in batch}
+                    placeholders = ",".join("?" for _ in batch)
+                    sql = (
+                        "SELECT path, mtime, size, info_hash, pieces_hash, file_name,"
+                        " torrent_name, total_size, announce, announce_list"
+                        f" FROM file_cache WHERE path IN ({placeholders})"
+                    )
+                    async with db.execute(sql, [p for p, _, _ in batch]) as cur:
+                        rows = await cur.fetchall()
+                    for (path, mtime, size, info_hash, pieces_hash, file_name,
+                         torrent_name, total_size, announce, announce_list) in rows:
+                        if identity.get(path) != (mtime, size):
+                            continue
+                        item = {
+                            "info_hash": info_hash,
+                            "pieces_hash": pieces_hash,
+                            "file_name": file_name,
+                            "file_path": path,
+                        }
+                        if torrent_name is not None:
+                            item["torrent_name"] = torrent_name
+                        if total_size is not None:
+                            item["total_size"] = total_size
+                        if announce is not None:
+                            item["announce"] = announce
+                        if announce_list:
+                            try:
+                                item["announce_list"] = _json.loads(announce_list)
+                            except ValueError:
+                                pass
+                        out[path] = item
+        return out
+
+    async def store_file_cache(self, entries: list[tuple[str, int, int, dict]]) -> None:
+        """写入/更新文件级解析缓存（INSERT OR REPLACE）。"""
+        import json as _json
+
+        rows = []
+        for path, mtime, size, t in entries:
+            rows.append((
+                path,
+                mtime,
+                size,
+                t.get("info_hash", ""),
+                t.get("pieces_hash", ""),
+                t.get("file_name", ""),
+                t.get("torrent_name"),
+                t.get("total_size"),
+                t.get("announce"),
+                _json.dumps(t["announce_list"]) if t.get("announce_list") else None,
+            ))
+        async with self._lock:
+            async with aiosqlite.connect(str(self._db_path)) as db:
+                await db.executemany(
+                    "INSERT OR REPLACE INTO file_cache "
+                    "(path, mtime, size, info_hash, pieces_hash, file_name,"
+                    " torrent_name, total_size, announce, announce_list)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    rows,
+                )
+                await db.commit()
+
+    async def prune_file_cache(self, keep: set[str]) -> int:
+        """裁剪 keep 集合之外的陈旧行（对应文件已删除）。"""
+        async with self._lock:
+            async with aiosqlite.connect(str(self._db_path)) as db:
+                async with db.execute("SELECT path FROM file_cache") as cur:
+                    stale = [r[0] for r in await cur.fetchall() if r[0] not in keep]
+                for start in range(0, len(stale), 900):
+                    batch = stale[start : start + 900]
+                    placeholders = ",".join("?" for _ in batch)
+                    await db.execute(
+                        f"DELETE FROM file_cache WHERE path IN ({placeholders})", batch
+                    )
+                await db.commit()
+        return len(stale)
 
     async def add_reseed_record(self, pieces_hash: str, site_name: str, torrent_id: int):
         async with self._lock:

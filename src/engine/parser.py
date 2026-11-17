@@ -81,20 +81,65 @@ class TorrentParser:
     async def scan_directory(
         torrent_dir: str,
         max_concurrent: int = 100,
+        cache=None,
     ) -> list[dict]:
+        """扫描目录下的 .torrent。
+
+        `cache`（TorrentCache）非空时启用文件级解析缓存：(path, mtime, size) 命中
+        即重建解析结果，只对新增/变更文件做读盘解析（与 Rust 版同口径）。
+        """
         dir_path = Path(torrent_dir)
         if not dir_path.exists():
             raise FileNotFoundError(f"种子目录不存在: {torrent_dir}")
 
-        files = list(dir_path.glob("*.torrent"))
+        files = [p for p in dir_path.glob("*.torrent") if p.is_file()]
         logger.info("发现 %d 个种子文件", len(files))
 
+        identities: list[tuple[str, int, int]] = []
+        for p in files:
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            identities.append((str(p), int(st.st_mtime), st.st_size))
+
+        cached: dict = {}
+        if cache is not None:
+            cached = await cache.lookup_file_cache(identities)
+        cache_hits = len(cached)
+        misses = [(p, m, s) for (p, m, s) in identities if p not in cached]
+        miss_total = len(misses)
+        if cache is not None:
+            logger.info("[阶段1] 文件级解析缓存: 命中 %d（跳过解析）, 解析 %d", cache_hits, miss_total)
+
         sem = asyncio.Semaphore(max_concurrent)
+        done = 0
 
-        async def parse_one(path: Path) -> Optional[dict]:
+        async def parse_one(path_str: str) -> Optional[dict]:
+            nonlocal done
             async with sem:
-                return await asyncio.to_thread(TorrentParser.parse_file, path)
+                result = await asyncio.to_thread(TorrentParser.parse_file, Path(path_str))
+                done += 1
+                if done % 5000 == 0 or done == miss_total:
+                    logger.info(
+                        "[阶段1] 解析进度 %d/%d（缓存命中 %d）", done, miss_total, cache_hits
+                    )
+                return result
 
-        tasks = [parse_one(f) for f in files]
+        tasks = [parse_one(p) for p, _, _ in misses]
         results = await asyncio.gather(*tasks)
-        return [r for r in results if r is not None]
+
+        torrents: list[dict] = []
+        store_entries: list[tuple[str, int, int, dict]] = []
+        for (path_str, mtime, size), result in zip(misses, results):
+            if result is not None:
+                store_entries.append((path_str, mtime, size, result))
+                torrents.append(result)
+        if cache is not None:
+            if store_entries:
+                await cache.store_file_cache(store_entries)
+            pruned = await cache.prune_file_cache({p for p, _, _ in identities})
+            if pruned:
+                logger.info("文件解析缓存裁剪 %d 行（对应文件已删除）", pruned)
+        torrents.extend(cached.values())
+        return torrents

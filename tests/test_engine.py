@@ -10,6 +10,15 @@ from tests.helpers import make_varied_torrent_bytes, write_yaml
 
 
 class FakeCache:
+    async def lookup_file_cache(self, keys):
+        return {}
+
+    async def store_file_cache(self, entries):
+        return None
+
+    async def prune_file_cache(self, keep):
+        return 0
+
     async def init(self):
         return None
 
@@ -140,6 +149,44 @@ async def test_phase_scan_requires_torrent_dir(config_files):
     engine = _engine(Config(str(cfg_path), str(sites_path)))
     with pytest.raises(ValueError, match="torrent_dir 未配置"):
         await engine._phase_scan()
+
+
+@pytest.mark.asyncio
+async def test_scan_directory_file_cache_skips_unchanged_files(tmp_path):
+    """(path,mtime,size) 命中即跳过解析：二轮全命中、改文件只解析它、删除即裁剪。"""
+    from src.engine.parser import TorrentParser
+    from src.storage.cache import TorrentCache
+    from tests.helpers import make_varied_torrent_bytes
+
+    torrent_dir = tmp_path / "torrents"
+    torrent_dir.mkdir()
+    for i in range(3):
+        (torrent_dir / f"t{i}.torrent").write_bytes(make_varied_torrent_bytes(i))
+    cache = TorrentCache(str(tmp_path / "cache.db"))
+    await cache.init()
+
+    first = await TorrentParser.scan_directory(str(torrent_dir), cache=cache)
+    assert len(first) == 3
+
+    # mtime/size 不一致不应命中
+    cached = await cache.lookup_file_cache(
+        [(str(torrent_dir / f"t{i}.torrent"), 0, 0) for i in range(3)]
+    )
+    assert cached == {}
+
+    second = await TorrentParser.scan_directory(str(torrent_dir), cache=cache)
+    assert len(second) == 3
+    assert {t["info_hash"] for t in first} == {t["info_hash"] for t in second}
+
+    # 改一个文件内容（长度不同）-> 下轮只解析它，其余命中
+    (torrent_dir / "t0.torrent").write_bytes(make_varied_torrent_bytes(99))
+    third = await TorrentParser.scan_directory(str(torrent_dir), cache=cache)
+    assert len(third) == 3
+
+    # 删除文件 -> prune 清掉陈旧行
+    (torrent_dir / "t2.torrent").unlink()
+    fourth = await TorrentParser.scan_directory(str(torrent_dir), cache=cache)
+    assert len(fourth) == 2
 
 
 @pytest.mark.asyncio
