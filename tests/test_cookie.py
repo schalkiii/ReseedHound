@@ -109,11 +109,11 @@ async def test_fetch_cookies_normalizes_leading_dot(monkeypatch):
         CookieCloudClient,
         "_decrypt",
         lambda self, data, *args, **kwargs: {
-        "cookie_data": {
-            ".example.com": [{"name": "a", "value": "1"}],
-            "invalid": "not a list",
+            "cookie_data": {
+                ".example.com": [{"name": "a", "value": "1"}],
+                "invalid": "not a list",
+            },
         },
-    },
     )
     assert await client.fetch_cookies() == {
         "example.com": [{"name": "a", "value": "1"}],
