@@ -101,7 +101,14 @@ class Config:
         self._config = self._load_yaml(config_path)
         self._sites_path = sites_path
         self._sites = self._load_yaml(sites_path)
+        # 相对路径（db.path / log.file）以 config.yaml 所在目录为锚，
+        # 避免「换个工作目录启动 → 新建空 cache.db → 辅种历史丢失」
+        self._base_dir = Path(config_path).resolve().parent
         self._validate()
+
+    def _resolve_path(self, raw: str) -> str:
+        p = Path(raw)
+        return str(p) if p.is_absolute() else str(self._base_dir / p)
 
     @staticmethod
     def _load_yaml(path: str) -> dict:
@@ -175,7 +182,11 @@ class Config:
 
     @property
     def db_path(self) -> str:
-        return self.value("db", "path")
+        return self._resolve_path(self.value("db", "path"))
+
+    @property
+    def log_file(self) -> str:
+        return self._resolve_path(self.value("log", "file"))
 
     @property
     def log_config(self) -> dict:

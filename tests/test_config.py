@@ -2,6 +2,8 @@
 import inspect
 import logging
 
+from pathlib import Path
+
 import pytest
 
 from src.engine.jackett import JackettClient
@@ -30,7 +32,10 @@ def test_defaults_single_source(bare_config):
     assert c.value("global", "download_interval") == d["global"]["download_interval"]
     assert c.value("global", "retry_count") == d["global"]["retry_count"]
     assert c.value("global", "retry_delay") == d["global"]["retry_delay"]
-    assert c.db_path == d["db"]["path"]
+    assert c.value("db", "path") == d["db"]["path"]
+    # db_path / log_file 输出绝对路径（锚定 config.yaml 所在目录，防换 cwd 丢历史库）
+    assert Path(c.db_path).is_absolute()
+    assert Path(c.log_file).is_absolute()
     assert c.value("log", "file") == d["log"]["file"] == "logs/reseed.log"
     assert c.value("log", "level") == d["log"]["level"]
     assert c.operation_mode == d["global"]["mode"]

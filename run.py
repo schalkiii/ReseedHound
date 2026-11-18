@@ -240,7 +240,7 @@ def build_config(args) -> Config:
 
 def setup_logging(config: Config, keep_runs: int = 3) -> None:
     """初始化日志（控制台 + 文件）。keep_runs<=0 时不裁剪日志（定时模式长驻）。"""
-    log_file = config.value("log", "file")
+    log_file = config.log_file
     if keep_runs > 0:
         trim_log_file(log_file, keep_runs=keep_runs)
     setup_logger(
