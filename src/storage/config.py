@@ -22,6 +22,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "retry_count": 2,
         "retry_delay": 2.0,
         "mode": "pieces_hash",
+        "download_limit_per_site": 50,
     },
     "db": {"path": "data/cache.db"},
     "log": {"level": "INFO", "file": "logs/reseed.log"},

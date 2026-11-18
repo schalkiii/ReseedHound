@@ -617,6 +617,10 @@ class ReseedEngine:
         no_access_sites: set[str] = set()
         site_serious_errors: dict[str, int] = {}
         site_timeout_errors: dict[str, int] = {}
+        # 每站每轮下载上限（默认 50）：下载 .torrent 即消耗站点配额，超限熔断并提示
+        download_limit = int(self._config.value("global", "download_limit_per_site"))
+        site_download_counts: dict[str, int] = {}
+        capped_sites: set[str] = set()
         MAX_SERIOUS_ERRORS = 3
         MAX_TIMEOUT_ERRORS = 30
 
@@ -695,6 +699,16 @@ class ReseedEngine:
                             f"&passkey={passkey}"
                         )
 
+                    # 每站每轮下载上限：命中即熔断该站剩余匹配（首次触发提示一次）
+                    if site_download_counts.get(site_name, 0) >= download_limit:
+                        if site_name not in capped_sites:
+                            capped_sites.add(site_name)
+                            logger.warning(
+                                "站点 %s 本轮下载已达上限 (%d)，跳过剩余匹配",
+                                site_name,
+                                download_limit,
+                            )
+                        continue
                     torrent_data, error_reason = await self._client.try_download(
                         dl_url,
                         site_name=site_name,
@@ -721,6 +735,12 @@ class ReseedEngine:
                             fallback_url,
                             site_name=site_name,
                             torrent_id=torrent_id,
+                        )
+                    # 计数只含真实发起的请求（死种缓存命中不消耗配额）；
+                    # HDArea 短效链接失效时的直链重试合并计 1 次
+                    if error_reason != "dead_cached":
+                        site_download_counts[site_name] = (
+                            site_download_counts.get(site_name, 0) + 1
                         )
                     if not torrent_data:
                         if error_reason == "dead_cached":
