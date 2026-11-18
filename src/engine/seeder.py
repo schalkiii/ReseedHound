@@ -43,6 +43,7 @@ class ReseedStats:
     tracker_skip_count: int = 0
     matched_count: int = 0
     succeeded_count: int = 0
+    already_in_downloader: int = 0
     failed_count: int = 0
     dead_count: int = 0
     skipped_count: int = 0
@@ -243,7 +244,7 @@ class ReseedEngine:
         self._stats.dead_count = self._dead_cache.size()
         logger.info("=" * 60)
         logger.info(
-            "辅种完成: 扫描=%d, 去重=%d, 新=%d, 匹配=%d, 追踪器跳过=%d, 成功=%d, 失败=%d, 死种=%d, 耗时=%s",
+            "辅种完成: 扫描=%d, 去重=%d, 新=%d, 匹配=%d, 追踪器跳过=%d, 成功=%d, 失败=%d, 已在下载器=%d, 跳过=%d, 死种=%d, 耗时=%s",
             self._stats.total_torrents,
             self._stats.duplicate_count,
             self._stats.new_torrents,
@@ -251,6 +252,8 @@ class ReseedEngine:
             self._stats.tracker_skip_count,
             self._stats.succeeded_count,
             self._stats.failed_count,
+            self._stats.already_in_downloader,
+            self._stats.skipped_count,
             self._stats.dead_count,
             self._stats.duration_str,
         )
@@ -370,6 +373,11 @@ class ReseedEngine:
 
                 new_info_hash = parsed["info_hash"]
                 if new_info_hash in qb_info_hashes:
+                    self._stats.already_in_downloader += 1
+                    logger.info(
+                        "已在下载器: %s -> [jackett]，跳过添加",
+                        t.get("file_name", "?"),
+                    )
                     continue
 
                 dl_info = await self._downloader.get_torrent_info(t["info_hash"])
@@ -385,7 +393,9 @@ class ReseedEngine:
                     paused=True,
                     tag=torrent_tag,
                 )
-                if success:
+                if success is None:
+                    self._stats.already_in_downloader += 1
+                elif success:
                     self._stats.succeeded_count += 1
                     indexer = result.indexer_name or "jackett"
                     self._stats.site_succeeded[indexer] = (
@@ -781,8 +791,15 @@ class ReseedEngine:
 
                     if new_info_hash in qb_info_hashes:
                         piece_succeeded = True
+                        self._stats.already_in_downloader += 1
                         await self._cache.add_reseed_record(
                             pieces_hash,
+                            site_name,
+                            torrent_id,
+                        )
+                        logger.info(
+                            "已在下载器: %s -> %s (id=%d)，跳过添加",
+                            entry.get("file_name", "?"),
                             site_name,
                             torrent_id,
                         )
@@ -794,7 +811,22 @@ class ReseedEngine:
                         paused=not auto_start,
                         tag=torrent_tag,
                     )
-                    if success:
+                    if success is None:
+                        # 目标已在下载器（qB 409）：良性终态，配额已消耗但不算失败
+                        piece_succeeded = True
+                        self._stats.already_in_downloader += 1
+                        await self._cache.add_reseed_record(
+                            pieces_hash,
+                            site_name,
+                            torrent_id,
+                        )
+                        logger.info(
+                            "已在下载器: %s -> %s (id=%d)，跳过添加",
+                            entry.get("file_name", "?"),
+                            site_name,
+                            torrent_id,
+                        )
+                    elif success:
                         piece_succeeded = True
                         self._stats.succeeded_count += 1
                         self._stats.site_succeeded[site_name] = (

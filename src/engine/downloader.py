@@ -24,7 +24,7 @@ class DownloaderBase(ABC):
         skip_hash_check: bool = True,
         paused: bool = True,
         tag: str = "",
-    ) -> bool:
+    ) -> Optional[bool]:
         ...
 
     @abstractmethod
@@ -142,6 +142,11 @@ class QbittorrentDownloader(DownloaderBase):
             logger.warning("添加种子未被受理: 返回 %r", result)
             return False
         except Exception as e:
+            if getattr(e, "status_code", None) == 409:
+                # qB 5.x 对「目标已存在」返回 409 Conflict（实测 5.3.0）：
+                # 良性重复，返回 None 与真实失败（False）区分
+                logger.info("已在下载器（qB 409），跳过添加")
+                return None
             logger.error("添加种子失败: %s", e)
             return False
 
