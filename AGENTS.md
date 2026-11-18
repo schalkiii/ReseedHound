@@ -18,7 +18,7 @@ python run.py reseed --dry-run          # 只查询不添加（改动前先跑�
 python run.py schedule                  # 按 config 中 scheduler 循环运行
 python run.py sync-cookies              # 单独同步 CookieCloud
 python run.py check-dead                # 对照 savept.icu 死亡名单，推荐禁用失效站点（--apply 才写）
-python -m pytest tests/ -q              # 189 项用例（含 test_hdarea.py 21、savept/重试/凭据 33 项）
+python -m pytest tests/ -q              # 193 项用例（含 test_hdarea.py 21、savept/重试/凭据 33 项）
 python -m flake8 src tests run.py       # 门禁：max-line-length=120（见 .flake8）
 ```
 
@@ -129,4 +129,4 @@ Python 3.11+（Docker 镜像 3.11，CI 覆盖 3.11 / 3.13）+ asyncio；
   Python 直连与 205 个真实种子的 dry-run E2E 均已验证。
 - 2026-11-12 禁用 8 个失效站点（昆仑/传道院/raingfh/星陨阁/伞/a4apt/Moment/cdfile）；
   新增 `check-dead`（对照 savept.icu 死亡名单推荐禁用）与凭据失效飞书提醒；优化重试策略
-  （硬失败不重试、HTML 响应归类、日志区分批次/重试）。测试扩到 **189 项**，`flake8` 0 错误。
+  （硬失败不重试、HTML 响应归类、日志区分批次/重试）。测试扩到 **193 项**，`flake8` 0 错误。
